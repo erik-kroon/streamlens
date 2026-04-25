@@ -25,6 +25,28 @@ textarea {
   letter-spacing: 0;
 }
 
+button,
+input,
+select,
+textarea {
+  outline: none;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid rgb(103 232 249 / 0.9);
+  outline-offset: 2px;
+}
+
+button:disabled,
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -98,6 +120,11 @@ textarea {
 
 .row-button:hover {
   background: rgb(39 39 42 / 0.9);
+}
+
+.row-button:focus-visible {
+  z-index: 2;
+  outline-offset: -2px;
 }
 
 .row-button.selected {
@@ -176,4 +203,14 @@ textarea {
 .badge-muted {
   color: #a1a1aa;
   background: rgb(63 63 70 / 0.16);
+}
+
+.timeline-marker {
+  transform: translateX(-50%);
+}
+
+.timeline-marker::before {
+  content: "";
+  position: absolute;
+  inset: 0 -6px;
 }

@@ -51,7 +51,7 @@ export type AgentClientState = {
 };
 
 export function createAgentClient(): AgentClientState {
-  const httpUrl = normalizeHttpUrl(import.meta.env.VITE_STREAMLENS_AGENT_URL);
+  const httpUrl = normalizeHttpUrl(configuredAgentHttpUrl());
   const liveUrl = `${httpUrl.replace(/^http/, "ws")}/live`;
 
   const [status, setStatus] = createSignal<AgentStatus>();
@@ -486,12 +486,30 @@ export function createAgentDerivedState(
   };
 }
 
+function configuredAgentHttpUrl(): string | undefined {
+  const queryValue = runtimeQueryValue("agentUrl");
+  if (queryValue) {
+    return queryValue;
+  }
+
+  return import.meta.env.VITE_STREAMLENS_AGENT_URL;
+}
+
 function normalizeHttpUrl(value: unknown): string {
   if (typeof value !== "string" || value.trim() === "") {
     return DEFAULT_AGENT_HTTP_URL;
   }
 
   return value.replace(/\/$/, "");
+}
+
+function runtimeQueryValue(name: string): string | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  const value = new URLSearchParams(window.location.search).get(name)?.trim();
+  return value || undefined;
 }
 
 function exportFilename(label: string, extension: "jsonl" | "tape"): string {
