@@ -53,6 +53,7 @@ const window = new BrowserWindow({
     x: 120,
     y: 120,
   },
+  titleBarStyle: "hiddenInset",
 });
 
 window.on("close", () => stopAgent(agent, "window closed"));

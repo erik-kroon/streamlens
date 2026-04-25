@@ -22,6 +22,13 @@ function App() {
   return <RouterProvider router={router} />;
 }
 
+function preventContextMenu(event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+document.addEventListener("contextmenu", preventContextMenu, { capture: true });
+
 const rootElement = document.getElementById("app");
 if (rootElement) {
   render(() => <App />, rootElement);
