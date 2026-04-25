@@ -1,4 +1,4 @@
-# StreamLens Optimal-State Issue Breakdown
+# Wiretap Optimal-State Issue Breakdown
 
 Parent PRD source: `docs/prd.md`
 
@@ -176,7 +176,7 @@ This breakdown targets the end-state product, not only MVP. It includes desktop 
     - User stories covered: 5, 6, 16, 17
     - Scope: fuzz generators, schema-aware and raw mutation modes, safety limits, reproducible seeds, regression fixtures.
 
-29. **Chrome DevTools extension inspects browser app streams through StreamLens**
+29. **Chrome DevTools extension inspects browser app streams through Wiretap**
     - Type: HITL
     - Blocked by: 1, 2, 17
     - User stories covered: 1, 4, 5, 11
@@ -232,7 +232,7 @@ Create issues in this order unless implementation priorities change:
 26. Replay server serves saved captures as live streams
 27. Fault-injection proxy mutates live streams for testing
 28. Protocol fuzzing generates adversarial stream inputs
-29. Chrome DevTools extension inspects browser app streams through StreamLens
+29. Chrome DevTools extension inspects browser app streams through Wiretap
 30. Electrobun desktop shell bundles UI and agent
 31. Native packet inspection captures low-level traffic metadata
 32. Design review for dense developer-tool ergonomics

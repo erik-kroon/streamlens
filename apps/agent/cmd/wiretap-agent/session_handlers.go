@@ -274,5 +274,5 @@ func exportSessionFilename(session captureSession) string {
 	if id == "" {
 		id = "session"
 	}
-	return fmt.Sprintf("streamlens-%s.jsonl", id)
+	return fmt.Sprintf("wiretap-%s.jsonl", id)
 }

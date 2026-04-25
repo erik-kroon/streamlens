@@ -29,7 +29,7 @@ func parseImportJSONL(reader io.Reader) ([]captureEvent, error) {
 			continue
 		}
 
-		var exported streamlensExportEvent
+		var exported wiretapExportEvent
 		if err := json.Unmarshal(line, &exported); err != nil {
 			return nil, fmt.Errorf("line %d is not valid JSON: %w", lineNumber, err)
 		}
@@ -48,7 +48,7 @@ func parseImportJSONL(reader io.Reader) ([]captureEvent, error) {
 	return events, nil
 }
 
-func importExportEvent(exported streamlensExportEvent) (captureEvent, error) {
+func importExportEvent(exported wiretapExportEvent) (captureEvent, error) {
 	payload, err := importPayload(exported)
 	if err != nil {
 		return captureEvent{}, err
@@ -84,7 +84,7 @@ func importExportEvent(exported streamlensExportEvent) (captureEvent, error) {
 	return event, nil
 }
 
-func importPayload(exported streamlensExportEvent) ([]byte, error) {
+func importPayload(exported wiretapExportEvent) ([]byte, error) {
 	if exported.RawBase64 != "" {
 		payload, err := base64.StdEncoding.DecodeString(exported.RawBase64)
 		if err != nil {
@@ -105,7 +105,7 @@ func importPayload(exported streamlensExportEvent) ([]byte, error) {
 	return nil, fmt.Errorf("event has no raw, rawBase64, or parsed payload")
 }
 
-func importOpcode(exported streamlensExportEvent) byte {
+func importOpcode(exported wiretapExportEvent) byte {
 	switch exported.Opcode {
 	case "binary":
 		return 0x2

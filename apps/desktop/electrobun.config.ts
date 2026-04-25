@@ -5,8 +5,8 @@ const bundledAgentDir = "resources/agent";
 
 export default {
   app: {
-    name: "streamlens",
-    identifier: "dev.bettertstack.streamlens.desktop",
+    name: "wiretap",
+    identifier: "dev.bettertstack.wiretap.desktop",
     version: "0.0.1",
   },
   runtime: {
@@ -20,7 +20,7 @@ export default {
       [webBuildDir]: "views/mainview",
       [bundledAgentDir]: "agent",
     },
-    watch: ["../agent/cmd/streamlens-agent", "scripts"],
+    watch: ["../agent/cmd/wiretap-agent", "scripts"],
     watchIgnore: [`${webBuildDir}/**`],
     mac: {
       bundleCEF: true,

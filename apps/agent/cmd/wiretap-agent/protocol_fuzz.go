@@ -242,7 +242,7 @@ func schemaFuzzInput(index int, rng *mrand.Rand, config fuzzConfig) fuzzInput {
 			"symbol":      "FUZZ",
 			"traceparent": fmt.Sprintf("00-%032x-%016x-01", uint64(config.Seed)+uint64(index)+1, uint64(seq)+1),
 			"resource": map[string]interface{}{
-				"service": map[string]interface{}{"name": "streamlens-fuzz"},
+				"service": map[string]interface{}{"name": "wiretap-fuzz"},
 			},
 			"payload": map[string]interface{}{
 				"bid":      180 + rng.Float64(),
@@ -479,5 +479,5 @@ func issueCodes(issues []captureIssue) []string {
 }
 
 func fuzzFixtureFilename(config fuzzConfig) string {
-	return fmt.Sprintf("streamlens-fuzz-%s-seed-%d.jsonl", config.Mode, config.Seed)
+	return fmt.Sprintf("wiretap-fuzz-%s-seed-%d.jsonl", config.Mode, config.Seed)
 }

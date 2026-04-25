@@ -83,7 +83,7 @@ export type CaptureIssue = {
   details?: unknown;
 };
 
-export type StreamLensEnvelope = {
+export type WiretapEnvelope = {
   topic: string;
   type: string;
   seq?: number;
@@ -132,7 +132,7 @@ export type CaptureEvent = {
   seq?: number;
   sourceTs?: unknown;
   correlation?: OtelCorrelation;
-  envelope?: StreamLensEnvelope;
+  envelope?: WiretapEnvelope;
   parseError?: string;
   statuses?: string[];
   issues?: CaptureIssue[];

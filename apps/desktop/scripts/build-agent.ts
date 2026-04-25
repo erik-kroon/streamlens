@@ -4,13 +4,13 @@ import { dirname, resolve } from "node:path";
 const targetOS = process.env.ELECTROBUN_OS ?? platformToGoOS(process.platform);
 const targetArch = process.env.ELECTROBUN_ARCH ?? archToGoArch(process.arch);
 const binaryName =
-  targetOS === "windows" || targetOS === "win" ? "streamlens-agent.exe" : "streamlens-agent";
+  targetOS === "windows" || targetOS === "win" ? "wiretap-agent.exe" : "wiretap-agent";
 const outputPath = resolve("resources", "agent", binaryName);
 const agentDir = resolve("..", "agent");
 
 mkdirSync(dirname(outputPath), { recursive: true });
 
-const result = Bun.spawnSync(["go", "build", "-o", outputPath, "./cmd/streamlens-agent"], {
+const result = Bun.spawnSync(["go", "build", "-o", outputPath, "./cmd/wiretap-agent"], {
   cwd: agentDir,
   env: {
     ...process.env,
@@ -21,14 +21,14 @@ const result = Bun.spawnSync(["go", "build", "-o", outputPath, "./cmd/streamlens
 });
 
 if (result.exitCode !== 0) {
-  throw new Error(`failed to build StreamLens agent for ${targetOS}/${targetArch}`);
+  throw new Error(`failed to build Wiretap agent for ${targetOS}/${targetArch}`);
 }
 
 if (!binaryName.endsWith(".exe")) {
   chmodSync(outputPath, 0o755);
 }
 
-console.log(`Built StreamLens agent: ${outputPath}`);
+console.log(`Built Wiretap agent: ${outputPath}`);
 
 function normalizeGoOS(value: string): string {
   if (value === "macos" || value === "darwin") {
