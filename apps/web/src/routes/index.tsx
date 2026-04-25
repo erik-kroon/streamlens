@@ -693,7 +693,7 @@ function App() {
           </div>
         </section>
 
-        <section class="grid min-h-0 grid-cols-1 grid-rows-[minmax(280px,42vh)_minmax(360px,1fr)_minmax(320px,45vh)_auto] overflow-visible lg:grid-cols-[330px_minmax(0,1fr)_350px] lg:grid-rows-[minmax(0,1fr)_220px] lg:overflow-hidden">
+        <section class="grid min-h-0 min-w-0 grid-cols-1 grid-rows-[minmax(280px,42vh)_minmax(360px,1fr)_minmax(320px,45vh)_auto] overflow-visible lg:grid-cols-[330px_minmax(0,1fr)_350px] lg:grid-rows-[minmax(0,1fr)_220px] lg:overflow-hidden">
           <AgentPanel
             phase={agent.phase()}
             controlError={controlError()}
@@ -761,7 +761,7 @@ function App() {
             saveExtractionRules={saveExtractionRules}
           />
 
-          <section class="grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_auto_1fr] border-b border-[var(--ui-border)] bg-[var(--ui-bg)] lg:col-start-2 lg:border-x lg:border-b-0">
+          <section class="grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden border-b border-[var(--ui-border)] bg-[var(--ui-bg)] lg:col-start-2 lg:border-x lg:border-b-0">
             <PanelHeader
               icon={Database}
               title="Captured Events"
@@ -1448,6 +1448,15 @@ function VirtualEventTable(props: {
   const [scrollTop, setScrollTop] = createSignal(0);
   const [viewportHeight, setViewportHeight] = createSignal(0);
   const [viewport, setViewport] = createSignal<HTMLDivElement>();
+  const tableLabels = [
+    "Seq",
+    "Stream / transport",
+    "Received",
+    "Topic",
+    "Status",
+    "Type",
+    "Payload preview",
+  ];
 
   onMount(() => {
     const element = viewport();
@@ -1463,9 +1472,12 @@ function VirtualEventTable(props: {
   });
 
   const totalHeight = createMemo(() => props.events.length * rowHeight);
+  const scrollContentHeight = createMemo(() => rowHeight + totalHeight());
+  const rowScrollTop = createMemo(() => Math.max(0, scrollTop() - rowHeight));
   const visibleRange = createMemo(() => {
-    const start = Math.max(0, Math.floor(scrollTop() / rowHeight) - overscan);
-    const visibleCount = Math.ceil(viewportHeight() / rowHeight) + overscan * 2;
+    const start = Math.max(0, Math.floor(rowScrollTop() / rowHeight) - overscan);
+    const visibleCount =
+      Math.ceil(Math.max(0, viewportHeight() - rowHeight) / rowHeight) + overscan * 2;
     const end = Math.min(props.events.length, start + visibleCount);
     return { start, end };
   });
@@ -1485,40 +1497,44 @@ function VirtualEventTable(props: {
     }
     void eventCount;
     void followVersion;
-    const nextScrollTop = Math.max(0, totalHeight() - element.clientHeight);
-    element.scrollTop = nextScrollTop;
-    setScrollTop(nextScrollTop);
+    const frame = requestAnimationFrame(() => {
+      const nextScrollTop = Math.max(0, scrollContentHeight() - element.clientHeight);
+      element.scrollTop = nextScrollTop;
+      setScrollTop(nextScrollTop);
+    });
+    onCleanup(() => cancelAnimationFrame(frame));
   });
 
   return (
-    <div class="grid min-h-0 grid-rows-[34px_1fr]">
-      <div class="event-grid border-b border-neutral-800 bg-neutral-900/70 text-xs font-medium uppercase text-neutral-500">
-        <span>Seq</span>
-        <span>Stream / transport</span>
-        <span>Received</span>
-        <span>Topic</span>
-        <span>Status</span>
-        <span>Type</span>
-        <span>Payload preview</span>
-      </div>
+    <div class="grid h-full min-h-0 min-w-0 overflow-hidden">
       <Show
         when={props.events.length > 0}
         fallback={
-          <EmptyState
-            connected={props.connected}
-            onConnect={props.onConnect}
-            onStartDemo={props.onStartDemo}
-          />
+          <div class="grid min-h-0 min-w-0 grid-rows-[34px_minmax(0,1fr)] overflow-hidden">
+            <div class="min-w-0 overflow-hidden border-b border-neutral-800 bg-neutral-900/70">
+              <div class="event-grid text-xs font-medium uppercase text-neutral-500">
+                <For each={tableLabels}>{(label) => <span>{label}</span>}</For>
+              </div>
+            </div>
+            <EmptyState
+              connected={props.connected}
+              onConnect={props.onConnect}
+              onStartDemo={props.onStartDemo}
+            />
+          </div>
         }
       >
         <div
           ref={setViewport}
-          class="event-table-scroll min-h-0 overflow-auto"
+          class="event-table-scroll min-h-0 min-w-0 overflow-auto"
           role="region"
           aria-label="Captured events"
           onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
         >
-          <div class="relative min-w-[1080px]" style={{ height: `${totalHeight()}px` }}>
+          <div class="relative min-w-[1080px]" style={{ height: `${scrollContentHeight()}px` }}>
+            <div class="event-grid sticky top-0 z-10 border-b border-neutral-800 bg-neutral-900/95 text-xs font-medium uppercase text-neutral-500 backdrop-blur">
+              <For each={tableLabels}>{(label) => <span>{label}</span>}</For>
+            </div>
             <For each={visibleEvents()}>
               {(event, index) => {
                 const eventIndex = () => visibleRange().start + index();
@@ -1536,7 +1552,7 @@ function VirtualEventTable(props: {
                     }`}
                     aria-current={props.selectedSeq === event.captureSeq ? "true" : undefined}
                     aria-label={eventRowLabel(event)}
-                    style={{ transform: `translateY(${eventIndex() * rowHeight}px)` }}
+                    style={{ transform: `translateY(${rowHeight + eventIndex() * rowHeight}px)` }}
                     onClick={() => props.onSelect(event.captureSeq)}
                   >
                     <span class="font-mono text-neutral-300">{event.captureSeq}</span>
