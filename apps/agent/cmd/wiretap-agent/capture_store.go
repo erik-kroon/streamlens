@@ -137,6 +137,76 @@ func (store *captureStore) loadSession(sessionID string) (captureSessionSnapshot
 	return captureSessionSnapshot{Session: session, Events: events, Topics: topics}, nil
 }
 
+func (store *captureStore) listSessions() ([]captureSession, error) {
+	entries, err := os.ReadDir(store.sessionsDir())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []captureSession{}, nil
+		}
+		return nil, err
+	}
+
+	sessions := make([]captureSession, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		session, err := store.readSession(entry.Name())
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		sessions = append(sessions, session)
+	}
+
+	sort.Slice(sessions, func(i int, j int) bool {
+		return sessions[i].UpdatedAt > sessions[j].UpdatedAt
+	})
+	return sessions, nil
+}
+
+func (store *captureStore) openSession(sessionID string) (captureSessionSnapshot, error) {
+	snapshot, err := store.loadSession(sessionID)
+	if err != nil {
+		return captureSessionSnapshot{}, err
+	}
+	if err := store.writeIndex(captureStoreIndex{
+		SchemaVersion:    captureStoreSchemaVersion,
+		CurrentSessionID: snapshot.Session.ID,
+	}); err != nil {
+		return captureSessionSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func (store *captureStore) deleteSession(sessionID string) (captureSessionSnapshot, error) {
+	index, err := store.readIndex()
+	if err != nil {
+		return captureSessionSnapshot{}, err
+	}
+	if _, err := store.readSession(sessionID); err != nil {
+		return captureSessionSnapshot{}, err
+	}
+	if err := os.RemoveAll(store.sessionDir(sessionID)); err != nil {
+		return captureSessionSnapshot{}, err
+	}
+
+	if index.CurrentSessionID != sessionID {
+		return captureSessionSnapshot{}, nil
+	}
+
+	sessions, err := store.listSessions()
+	if err != nil {
+		return captureSessionSnapshot{}, err
+	}
+	if len(sessions) == 0 {
+		return store.createSession("")
+	}
+	return store.openSession(sessions[0].ID)
+}
+
 func (store *captureStore) appendEvent(sessionID string, event captureEvent, topics []topicState, session captureSession) (captureSession, error) {
 	if err := os.MkdirAll(store.sessionDir(sessionID), 0o755); err != nil {
 		return captureSession{}, err
@@ -246,6 +316,11 @@ func (store *captureStore) readLastEvents(sessionID string, count int) ([]captur
 		return events, nil
 	}
 	return events[len(events)-count:], nil
+}
+
+func (store *captureStore) readAllEvents(sessionID string) ([]captureEvent, error) {
+	events, _, err := store.readEventPage(sessionID, 0, store.eventLimit)
+	return events, err
 }
 
 func (store *captureStore) readEventPage(sessionID string, offset int, limit int) ([]captureEvent, int, error) {

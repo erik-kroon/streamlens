@@ -8,6 +8,7 @@ type sequenceTracker struct {
 
 type sequenceCursor struct {
 	Scope       string
+	StreamID    string
 	Topic       string
 	Key         string
 	LastSeq     int64
@@ -30,10 +31,11 @@ func (tracker *sequenceTracker) detect(event *captureEvent) {
 	if key == "" {
 		key = event.Key
 	}
-	scope := sequenceScopeID(event.Topic, key)
+	streamID := normalizedStreamID(event.StreamID)
+	scope := sequenceScopeID(streamID, event.Topic, key)
 	cursor, seen := tracker.cursors[scope]
 	if !seen {
-		tracker.remember(scope, event.Topic, key, *event.Seq, event.ID)
+		tracker.remember(scope, streamID, event.Topic, key, *event.Seq, event.ID)
 		return
 	}
 
@@ -63,15 +65,16 @@ func (tracker *sequenceTracker) detect(event *captureEvent) {
 			"missingEnd":   actual - 1,
 			"lastEventId":  cursor.LastEventID,
 		})
-		tracker.remember(scope, event.Topic, key, actual, event.ID)
+		tracker.remember(scope, streamID, event.Topic, key, actual, event.ID)
 	default:
-		tracker.remember(scope, event.Topic, key, actual, event.ID)
+		tracker.remember(scope, streamID, event.Topic, key, actual, event.ID)
 	}
 }
 
-func (tracker *sequenceTracker) remember(scope string, topic string, key string, seq int64, eventID string) {
+func (tracker *sequenceTracker) remember(scope string, streamID string, topic string, key string, seq int64, eventID string) {
 	tracker.cursors[scope] = sequenceCursor{
 		Scope:       scope,
+		StreamID:    streamID,
 		Topic:       topic,
 		Key:         key,
 		LastSeq:     seq,
@@ -79,11 +82,12 @@ func (tracker *sequenceTracker) remember(scope string, topic string, key string,
 	}
 }
 
-func sequenceScopeID(topic string, key string) string {
+func sequenceScopeID(streamID string, topic string, key string) string {
+	prefix := normalizedStreamID(streamID) + "\x00"
 	if key == "" {
-		return topic
+		return prefix + topic
 	}
-	return topic + "\x00" + key
+	return prefix + topic + "\x00" + key
 }
 
 func sequenceScopeLabel(topic string, key string) string {

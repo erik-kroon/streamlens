@@ -3,11 +3,14 @@ import { createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import {
   type AgentStatus,
   type CaptureEvent,
+  type CaptureSession,
   type CaptureStats,
   type ConnectRequest,
+  type ExtractionRules,
   type TopicState,
   isAgentStatus,
   isAgentToUiMessage,
+  isCaptureSession,
 } from "@/lib/agent-protocol";
 
 const DEFAULT_AGENT_HTTP_URL = "http://localhost:8790";
@@ -19,6 +22,8 @@ export type AgentClientPhase = "connecting" | "ready" | "disconnected" | "error"
 export type AgentClientState = {
   status: () => AgentStatus | undefined;
   stats: () => CaptureStats | undefined;
+  currentSession: () => CaptureSession | undefined;
+  sessions: () => CaptureSession[];
   events: () => CaptureEvent[];
   topics: () => TopicState[];
   phase: () => AgentClientPhase;
@@ -28,10 +33,17 @@ export type AgentClientState = {
   liveUrl: string;
   reconnect: () => void;
   connectUpstream: (request: ConnectRequest) => Promise<void>;
-  disconnectUpstream: () => Promise<void>;
-  reconnectUpstream: () => Promise<void>;
+  disconnectUpstream: (streamId?: string) => Promise<void>;
+  reconnectUpstream: (streamId?: string) => Promise<void>;
   clearCapture: () => Promise<void>;
   exportJSONL: () => Promise<void>;
+  importJSONL: (file: File) => Promise<void>;
+  refreshSessions: () => Promise<void>;
+  openSession: (sessionId: string) => Promise<void>;
+  deleteSession: (sessionId: string) => Promise<void>;
+  exportSessionJSONL: (sessionId: string) => Promise<void>;
+  readExtractionRules: () => Promise<ExtractionRules>;
+  saveExtractionRules: (rules: ExtractionRules) => Promise<ExtractionRules>;
 };
 
 export function createAgentClient(): AgentClientState {
@@ -40,6 +52,8 @@ export function createAgentClient(): AgentClientState {
 
   const [status, setStatus] = createSignal<AgentStatus>();
   const [stats, setStats] = createSignal<CaptureStats>();
+  const [currentSession, setCurrentSession] = createSignal<CaptureSession>();
+  const [sessions, setSessions] = createSignal<CaptureSession[]>([]);
   const [events, setEvents] = createSignal<CaptureEvent[]>([]);
   const [topics, setTopics] = createSignal<TopicState[]>([]);
   const [phase, setPhase] = createSignal<AgentClientPhase>("connecting");
@@ -136,8 +150,33 @@ export function createAgentClient(): AgentClientState {
     }
   };
 
-  const downloadJSONL = async () => {
-    const response = await fetch(`${httpUrl}/export/jsonl`);
+  const readSessions = async () => {
+    const [sessionsResponse, currentResponse] = await Promise.all([
+      fetch(`${httpUrl}/sessions`),
+      fetch(`${httpUrl}/sessions/current`),
+    ]);
+
+    if (!sessionsResponse.ok) {
+      throw new Error(`sessions returned ${sessionsResponse.status}`);
+    }
+    if (!currentResponse.ok) {
+      throw new Error(`current session returned ${currentResponse.status}`);
+    }
+
+    const sessionPayload: unknown = await sessionsResponse.json();
+    const currentPayload: unknown = await currentResponse.json();
+    if (!Array.isArray(sessionPayload) || !sessionPayload.every(isCaptureSession)) {
+      throw new Error("sessions returned invalid capture sessions");
+    }
+    if (!isCaptureSession(currentPayload)) {
+      throw new Error("current session returned an invalid capture session");
+    }
+    setSessions(sessionPayload);
+    setCurrentSession(currentPayload);
+  };
+
+  const downloadJSONL = async (path: string, filename: string) => {
+    const response = await fetch(`${httpUrl}${path}`);
     if (!response.ok) {
       const payload: unknown = await response.json().catch(() => undefined);
       const message =
@@ -151,11 +190,53 @@ export function createAgentClient(): AgentClientState {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = exportFilename();
+    link.download = filename;
     document.body.append(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
+  };
+
+  const uploadJSONL = async (file: File) => {
+    const formData = new FormData();
+    formData.set("capture", file);
+    const response = await fetch(`${httpUrl}/import/jsonl`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!response.ok) {
+      const payload: unknown = await response.json().catch(() => undefined);
+      const message =
+        payload && typeof payload === "object" && "message" in payload
+          ? String((payload as { message: unknown }).message)
+          : `import returned ${response.status}`;
+      throw new Error(message);
+    }
+  };
+
+  const readExtractionRules = async () => {
+    const response = await fetch(`${httpUrl}/extraction-rules`);
+    if (!response.ok) {
+      throw new Error(`extraction rules returned ${response.status}`);
+    }
+    return (await response.json()) as ExtractionRules;
+  };
+
+  const saveExtractionRules = async (rules: ExtractionRules) => {
+    const response = await fetch(`${httpUrl}/extraction-rules`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(rules),
+    });
+    if (!response.ok) {
+      const payload: unknown = await response.json().catch(() => undefined);
+      const message =
+        payload && typeof payload === "object" && "message" in payload
+          ? String((payload as { message: unknown }).message)
+          : `extraction rules returned ${response.status}`;
+      throw new Error(message);
+    }
+    return (await response.json()) as ExtractionRules;
   };
 
   function connect() {
@@ -241,6 +322,9 @@ export function createAgentClient(): AgentClientState {
 
   onMount(() => {
     void readHealth();
+    void readSessions().catch((caught) =>
+      setError(caught instanceof Error ? caught.message : "session request failed"),
+    );
     connect();
   });
 
@@ -255,6 +339,8 @@ export function createAgentClient(): AgentClientState {
   return {
     status,
     stats,
+    currentSession,
+    sessions,
     events,
     topics,
     phase,
@@ -267,24 +353,63 @@ export function createAgentClient(): AgentClientState {
       setError(undefined);
       await postControl("/connect", request);
     },
-    disconnectUpstream: async () => {
+    disconnectUpstream: async (streamId) => {
       setError(undefined);
-      await postControl("/disconnect");
+      await postControl(streamControlPath("/disconnect", streamId));
     },
-    reconnectUpstream: async () => {
+    reconnectUpstream: async (streamId) => {
       setError(undefined);
-      await postControl("/reconnect");
+      await postControl(streamControlPath("/reconnect", streamId));
     },
     clearCapture: async () => {
       setError(undefined);
       await postControl("/clear");
+      await readSessions();
       setEvents([]);
       setTopics([]);
     },
     exportJSONL: async () => {
       setError(undefined);
-      await downloadJSONL();
+      await downloadJSONL("/export/jsonl", exportFilename("capture"));
     },
+    importJSONL: async (file) => {
+      setError(undefined);
+      await uploadJSONL(file);
+      await readSessions();
+    },
+    refreshSessions: async () => {
+      setError(undefined);
+      await readSessions();
+    },
+    openSession: async (sessionId) => {
+      setError(undefined);
+      await postControl(`/sessions/${encodeURIComponent(sessionId)}/open`);
+      await readSessions();
+    },
+    deleteSession: async (sessionId) => {
+      setError(undefined);
+      const response = await fetch(`${httpUrl}/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const payload: unknown = await response.json().catch(() => undefined);
+        const message =
+          payload && typeof payload === "object" && "message" in payload
+            ? String((payload as { message: unknown }).message)
+            : `delete session returned ${response.status}`;
+        throw new Error(message);
+      }
+      await readSessions();
+    },
+    exportSessionJSONL: async (sessionId) => {
+      setError(undefined);
+      await downloadJSONL(
+        `/sessions/${encodeURIComponent(sessionId)}/export/jsonl`,
+        exportFilename(sessionId),
+      );
+    },
+    readExtractionRules,
+    saveExtractionRules,
   };
 }
 
@@ -319,6 +444,14 @@ function normalizeHttpUrl(value: unknown): string {
   return value.replace(/\/$/, "");
 }
 
-function exportFilename(): string {
-  return `wiretap-capture-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`;
+function exportFilename(label: string): string {
+  const safeLabel = label.replace(/[^a-zA-Z0-9_-]/g, "-");
+  return `wiretap-${safeLabel}-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`;
+}
+
+function streamControlPath(path: string, streamId: string | undefined): string {
+  if (!streamId) {
+    return path;
+  }
+  return `${path}?streamId=${encodeURIComponent(streamId)}`;
 }
