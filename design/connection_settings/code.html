@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Wiretap - Connection &amp; Configuration</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&amp;family=Fira+Code:wght@450;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        .material-symbols-outlined {
+            font-family: 'Material Symbols Outlined';
+            font-weight: normal;
+            font-style: normal;
+            font-size: 20px;
+            line-height: 1;
+            letter-spacing: normal;
+            text-transform: none;
+            display: inline-block;
+            white-space: nowrap;
+            word-wrap: normal;
+            direction: ltr;
+            -webkit-font-feature-settings: 'liga';
+            -webkit-font-smoothing: antialiased;
+        }
+        
+        /* Custom Terminal Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #333333;
+            border-radius: 0;
+        }
+        ::-webkit-scrollbar-corner {
+            background: transparent;
+        }
+    </style>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "tertiary-fixed-dim": "#e7bf99",
+                        "inverse-surface": "#e5e2e1",
+                        "inverse-on-surface": "#313030",
+                        "inverse-primary": "#006e16",
+                        "error-container": "#93000a",
+                        "secondary": "#bdf4ff",
+                        "background": "#131313",
+                        "surface-container": "#201f1f",
+                        "surface-dim": "#131313",
+                        "secondary-fixed-dim": "#00daf3",
+                        "on-tertiary": "#442b10",
+                        "on-tertiary-fixed-variant": "#5d4124",
+                        "on-primary": "#003907",
+                        "primary-fixed": "#72ff70",
+                        "tertiary-container": "#ffd5ae",
+                        "surface-container-lowest": "#0e0e0e",
+                        "outline-variant": "#3b4b37",
+                        "primary-container": "#00ff41",
+                        "primary-fixed-dim": "#00e639",
+                        "surface-tint": "#00e639",
+                        "on-secondary-fixed": "#001f24",
+                        "on-tertiary-fixed": "#2c1701",
+                        "surface": "#131313",
+                        "secondary-container": "#00e3fd",
+                        "secondary-fixed": "#9cf0ff",
+                        "on-background": "#e5e2e1",
+                        "on-primary-fixed-variant": "#00530e",
+                        "surface-variant": "#353534",
+                        "on-error": "#690005",
+                        "surface-bright": "#393939",
+                        "on-secondary": "#00363d",
+                        "on-tertiary-container": "#7a5b3c",
+                        "on-secondary-container": "#00616d",
+                        "tertiary": "#fff8f4",
+                        "on-secondary-fixed-variant": "#004f58",
+                        "error": "#ffb4ab",
+                        "surface-container-highest": "#353534",
+                        "on-primary-fixed": "#002203",
+                        "outline": "#84967e",
+                        "on-primary-container": "#007117",
+                        "on-surface-variant": "#b9ccb2",
+                        "surface-container-low": "#1c1b1b",
+                        "tertiary-fixed": "#ffdcbd",
+                        "on-error-container": "#ffdad6",
+                        "surface-container-high": "#2a2a2a",
+                        "on-surface": "#e5e2e1",
+                        "primary": "#ebffe2"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "row-height-dense": "24px",
+                        "unit": "4px",
+                        "container-padding": "12px",
+                        "gutter": "1px",
+                        "row-height-standard": "32px"
+                    },
+                    "fontFamily": {
+                        "ui-control": ["Inter"],
+                        "header-section": ["Inter"],
+                        "data-mono": ["Fira Code"],
+                        "data-mono-bold": ["Fira Code"],
+                        "ui-label-xs": ["Inter"]
+                    },
+                    "fontSize": {
+                        "ui-control": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+                        "header-section": ["11px", { "lineHeight": "16px", "fontWeight": "700" }],
+                        "data-mono": ["12px", { "lineHeight": "16px", "fontWeight": "450" }],
+                        "data-mono-bold": ["12px", { "lineHeight": "16px", "fontWeight": "600" }],
+                        "ui-label-xs": ["10px", { "lineHeight": "12px", "letterSpacing": "0.02em", "fontWeight": "600" }]
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-surface-container-lowest text-on-surface h-screen w-screen overflow-hidden flex flex-col font-ui-control selection:bg-primary-container selection:text-on-primary-container">
+<!-- TopAppBar -->
+<header class="bg-[#121212] border-b border-[#2A2A2A] flex justify-between items-center h-10 px-2 w-full shrink-0 z-20">
+<div class="flex items-center space-x-4">
+<span class="text-[#00FF41] font-black text-sm tracking-tighter ml-2">WIRETAP</span>
+<div class="hidden sm:flex items-center space-x-3 ml-4">
+<span class="font-['Inter'] text-[11px] font-bold uppercase tracking-tight text-[#A0A0A0]">ws://api.trade.local</span>
+<span class="w-[1px] h-3 bg-surface-container-high"></span>
+<span class="font-['Inter'] text-[11px] font-bold uppercase tracking-tight text-[#A0A0A0]">9,421 EVT</span>
+<span class="w-[1px] h-3 bg-surface-container-high"></span>
+<span class="font-['Inter'] text-[11px] font-bold uppercase tracking-tight text-[#A0A0A0]">124 msg/s</span>
+</div>
+</div>
+<div class="flex items-center space-x-1">
+<button class="h-6 w-6 flex items-center justify-center text-[#A0A0A0] hover:bg-[#1E1E1E] transition-colors cursor-pointer active:bg-[#2A2A2A]" title="pause">
+<span class="material-symbols-outlined text-[16px]">pause</span>
+</button>
+<button class="h-6 w-6 flex items-center justify-center text-[#A0A0A0] hover:bg-[#1E1E1E] transition-colors cursor-pointer active:bg-[#2A2A2A]" title="block">
+<span class="material-symbols-outlined text-[16px]">block</span>
+</button>
+<button class="h-6 w-6 flex items-center justify-center text-[#A0A0A0] hover:bg-[#1E1E1E] transition-colors cursor-pointer active:bg-[#2A2A2A]" title="download">
+<span class="material-symbols-outlined text-[16px]">download</span>
+</button>
+<button class="h-6 w-6 flex items-center justify-center text-[#A0A0A0] hover:bg-[#1E1E1E] transition-colors cursor-pointer active:bg-[#2A2A2A]" title="link">
+<span class="material-symbols-outlined text-[16px]">link</span>
+</button>
+</div>
+</header>
+<div class="flex flex-1 overflow-hidden">
+<!-- SideNavBar -->
+<nav class="bg-[#121212] border-r border-[#2A2A2A] docked h-full left-0 w-16 flex flex-col items-center py-4 space-y-4 hidden md:flex shrink-0 z-10">
+<!-- Streams (Inactive) -->
+<a class="w-full flex flex-col items-center py-2 text-[#555555] hover:text-[#FFFFFF] hover:bg-[#161616] transition-all duration-75 group border-l-2 border-transparent" href="#">
+<span class="material-symbols-outlined mb-1 group-hover:text-white transition-colors">sensors</span>
+<span class="font-['Inter'] text-[10px] uppercase font-medium">Streams</span>
+</a>
+<!-- Topics (Inactive) -->
+<a class="w-full flex flex-col items-center py-2 text-[#555555] hover:text-[#FFFFFF] hover:bg-[#161616] transition-all duration-75 group border-l-2 border-transparent" href="#">
+<span class="material-symbols-outlined mb-1 group-hover:text-white transition-colors">list_alt</span>
+<span class="font-['Inter'] text-[10px] uppercase font-medium">Topics</span>
+</a>
+<!-- Peers (Inactive) -->
+<a class="w-full flex flex-col items-center py-2 text-[#555555] hover:text-[#FFFFFF] hover:bg-[#161616] transition-all duration-75 group border-l-2 border-transparent" href="#">
+<span class="material-symbols-outlined mb-1 group-hover:text-white transition-colors">hub</span>
+<span class="font-['Inter'] text-[10px] uppercase font-medium">Peers</span>
+</a>
+<!-- Alerts (Inactive) -->
+<a class="w-full flex flex-col items-center py-2 text-[#555555] hover:text-[#FFFFFF] hover:bg-[#161616] transition-all duration-75 group border-l-2 border-transparent" href="#">
+<span class="material-symbols-outlined mb-1 group-hover:text-white transition-colors">warning</span>
+<span class="font-['Inter'] text-[10px] uppercase font-medium">Alerts</span>
+</a>
+<!-- Settings (Active) -->
+<a class="w-full flex flex-col items-center py-2 bg-[#1E1E1E] text-[#00FF41] border-l-2 border-[#00FF41] transition-all duration-75 group" href="#">
+<span class="material-symbols-outlined mb-1" style="font-variation-settings: 'FILL' 1;">settings</span>
+<span class="font-['Inter'] text-[10px] uppercase font-medium">Settings</span>
+</a>
+</nav>
+<!-- Main Content Canvas -->
+<main class="flex-1 overflow-y-auto p-container-padding pb-12 md:pb-container-padding bg-surface-container-lowest">
+<div class="max-w-5xl mx-auto space-y-4">
+<!-- Page Title Area (Subtle) -->
+<div class="flex items-center justify-between mb-6">
+<div>
+<h1 class="font-header-section text-header-section text-on-surface uppercase tracking-wider">Configuration Profile</h1>
+<p class="font-ui-control text-ui-control text-on-surface-variant mt-1">Manage transport parameters and data handling rules.</p>
+</div>
+<button class="h-6 px-3 bg-surface border border-surface-container-high text-on-surface font-ui-label-xs text-ui-label-xs hover:bg-surface-container-high transition-colors flex items-center space-x-1">
+<span class="material-symbols-outlined text-[14px]">save</span>
+<span>APPLY CHANGES</span>
+</button>
+</div>
+<!-- Grid Layout for Settings Panels -->
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+<!-- Panel: WebSocket Connection -->
+<div class="bg-surface border border-surface-container-high flex flex-col">
+<div class="px-3 py-2 border-b border-surface-container-high flex items-center justify-between bg-surface-container">
+<span class="font-header-section text-header-section text-on-surface uppercase flex items-center space-x-2">
+<span class="material-symbols-outlined text-[14px] text-primary-container">cable</span>
+<span>WebSocket Connection</span>
+</span>
+</div>
+<div class="p-3 space-y-4 flex-1">
+<!-- URL Input -->
+<div class="flex flex-col space-y-1">
+<label class="font-ui-label-xs text-ui-label-xs text-on-surface-variant uppercase">Target URI</label>
+<div class="relative flex items-center">
+<span class="absolute left-2 text-on-surface-variant font-data-mono text-data-mono">ws://</span>
+<input class="w-full h-[28px] bg-surface-container-lowest border border-surface-container-high text-on-surface font-data-mono text-data-mono pl-[44px] pr-2 focus:outline-none focus:border-primary-container focus:ring-0 transition-colors" type="text" value="api.trade.local/v2/stream"/>
+</div>
+</div>
+<!-- Reconnect Matrix -->
+<div class="grid grid-cols-2 gap-3">
+<div class="flex flex-col space-y-1">
+<label class="font-ui-label-xs text-ui-label-xs text-on-surface-variant uppercase">Max Retries</label>
+<input class="w-full h-[28px] bg-surface-container-lowest border border-surface-container-high text-on-surface font-data-mono text-data-mono px-2 focus:outline-none focus:border-primary-container focus:ring-0 transition-colors text-right" type="number" value="5"/>
+</div>
+<div class="flex flex-col space-y-1">
+<label class="font-ui-label-xs text-ui-label-xs text-on-surface-variant uppercase">Delay (ms)</label>
+<input class="w-full h-[28px] bg-surface-container-lowest border border-surface-container-high text-on-surface font-data-mono text-data-mono px-2 focus:outline-none focus:border-primary-container focus:ring-0 transition-colors text-right" type="number" value="2500"/>
+</div>
+</div>
+</div>
+</div>
+<!-- Panel: Sequence Modes & Buffer -->
+<div class="grid grid-rows-2 gap-4">
+<!-- Sub-Panel: Sequence Modes -->
+<div class="bg-surface border border-surface-container-high flex flex-col">
+<div class="px-3 py-2 border-b border-surface-container-high flex items-center justify-between bg-surface-container">
+<span class="font-header-section text-header-section text-on-surface uppercase flex items-center space-x-2">
+<span class="material-symbols-outlined text-[14px]">format_list_numbered</span>
+<span>Sequence Tracking</span>
+</span>
+</div>
+<div class="p-3 flex items-center justify-between h-full">
+<div class="flex space-x-1 w-full bg-surface-container-lowest border border-surface-container-high p-[2px]">
+<button class="flex-1 h-[24px] text-center font-ui-label-xs text-ui-label-xs uppercase tracking-wider text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors">Global</button>
+<button class="flex-1 h-[24px] text-center font-ui-label-xs text-ui-label-xs uppercase tracking-wider bg-surface-container-high text-primary-container border-b border-primary-container transition-colors">Topic</button>
+<button class="flex-1 h-[24px] text-center font-ui-label-xs text-ui-label-xs uppercase tracking-wider text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors">Key</button>
+</div>
+</div>
+</div>
+<!-- Sub-Panel: Replay Buffer -->
+<div class="bg-surface border border-surface-container-high flex flex-col">
+<div class="px-3 py-2 border-b border-surface-container-high flex items-center justify-between bg-surface-container">
+<span class="font-header-section text-header-section text-on-surface uppercase flex items-center space-x-2">
+<span class="material-symbols-outlined text-[14px]">history</span>
+<span>Replay Buffer</span>
+</span>
+</div>
+<div class="p-3 flex items-center space-x-4 h-full">
+<div class="flex-1">
+<input class="w-full h-1 bg-surface-container-high rounded-none appearance-none cursor-pointer accent-primary-container" max="50000" min="1000" step="1000" type="range" value="10000"/>
+<div class="flex justify-between mt-2 font-ui-label-xs text-ui-label-xs text-on-surface-variant">
+<span>1K</span>
+<span>50K</span>
+</div>
+</div>
+<div class="w-24 shrink-0 flex items-center bg-surface-container-lowest border border-surface-container-high h-[28px] px-2">
+<input class="w-full bg-transparent text-right font-data-mono text-data-mono text-on-surface focus:outline-none" readonly="" type="text" value="10,000"/>
+</div>
+</div>
+</div>
+</div>
+<!-- Panel: Freshness Rules (Spans full width on XL) -->
+<div class="bg-surface border border-surface-container-high flex flex-col xl:col-span-2">
+<div class="px-3 py-2 border-b border-surface-container-high flex items-center justify-between bg-surface-container">
+<span class="font-header-section text-header-section text-on-surface uppercase flex items-center space-x-2">
+<span class="material-symbols-outlined text-[14px]">timer</span>
+<span>Freshness Thresholds</span>
+</span>
+<button class="h-5 px-2 bg-surface-container-high border border-surface-variant hover:border-primary-container text-on-surface hover:text-primary-container font-ui-label-xs text-ui-label-xs flex items-center space-x-1 transition-colors">
+<span class="material-symbols-outlined text-[12px]">add</span>
+<span>ADD RULE</span>
+</button>
+</div>
+<!-- Table Layout -->
+<div class="w-full overflow-x-auto">
+<table class="w-full text-left table-fixed" style="min-width: 600px;">
+<thead class="border-b border-surface-container-high bg-surface-container-lowest">
+<tr>
+<th class="w-10 px-3 py-2 font-ui-label-xs text-ui-label-xs text-on-surface-variant uppercase font-medium">#</th>
+<th class="px-3 py-2 font-ui-label-xs text-ui-label-xs text-on-surface-variant uppercase font-medium">Topic Pattern (Regex)</th>
+<th class="w-32 px-3 py-2 font-ui-label-xs text-ui-label-xs text-on-surface-variant uppercase font-medium text-right">Stale (ms)</th>
+<th class="w-16 px-3 py-2 font-ui-label-xs text-ui-label-xs text-on-surface-variant uppercase font-medium text-center">Action</th>
+</tr>
+</thead>
+<tbody class="font-data-mono text-data-mono divide-y divide-surface-container-high">
+<!-- Row 1 -->
+<tr class="hover:bg-surface-container transition-colors group">
+<td class="px-3 py-1.5 text-on-surface-variant border-l-2 border-transparent group-hover:border-primary-container">01</td>
+<td class="px-3 py-1.5 text-secondary">market\.depth\..*</td>
+<td class="px-3 py-1.5 text-right text-tertiary-fixed-dim">250</td>
+<td class="px-3 py-1.5 text-center">
+<button class="text-on-surface-variant hover:text-error transition-colors" title="Remove">
+<span class="material-symbols-outlined text-[16px]">close</span>
+</button>
+</td>
+</tr>
+<!-- Row 2 -->
+<tr class="bg-surface-container-low hover:bg-surface-container transition-colors group">
+<td class="px-3 py-1.5 text-on-surface-variant border-l-2 border-transparent group-hover:border-primary-container">02</td>
+<td class="px-3 py-1.5 text-secondary">trade\.exec\.usd.*</td>
+<td class="px-3 py-1.5 text-right text-tertiary-fixed-dim">1000</td>
+<td class="px-3 py-1.5 text-center">
+<button class="text-on-surface-variant hover:text-error transition-colors" title="Remove">
+<span class="material-symbols-outlined text-[16px]">close</span>
+</button>
+</td>
+</tr>
+<!-- Row 3 -->
+<tr class="hover:bg-surface-container transition-colors group">
+<td class="px-3 py-1.5 text-on-surface-variant border-l-2 border-transparent group-hover:border-primary-container">03</td>
+<td class="px-3 py-1.5 text-secondary">system\.heartbeat</td>
+<td class="px-3 py-1.5 text-right text-tertiary-fixed-dim">5000</td>
+<td class="px-3 py-1.5 text-center">
+<button class="text-on-surface-variant hover:text-error transition-colors" title="Remove">
+<span class="material-symbols-outlined text-[16px]">close</span>
+</button>
+</td>
+</tr>
+<!-- Row 4 (Default) -->
+<tr class="bg-surface-container-low hover:bg-surface-container transition-colors group">
+<td class="px-3 py-1.5 text-on-surface-variant border-l-2 border-transparent group-hover:border-primary-container">*</td>
+<td class="px-3 py-1.5 text-on-surface-variant italic">.* (Global Fallback)</td>
+<td class="px-3 py-1.5 text-right text-tertiary-fixed-dim">10000</td>
+<td class="px-3 py-1.5 text-center">
+<!-- Cannot delete global fallback -->
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+</div>
+</main>
+</div>
+<!-- BottomNavBar (Mobile Only) -->
+<nav class="bg-[#0A0A0A] border-t border-[#2A2A2A] fixed bottom-0 left-0 w-full z-50 flex h-8 items-center px-4 space-x-6 md:hidden justify-center shrink-0">
+<!-- Timeline (Inactive) -->
+<a class="flex items-center text-[#555555] px-3 py-1 hover:bg-[#121212] active:scale-95 transition-all" href="#">
+<span class="material-symbols-outlined text-[16px] mr-1">timeline</span>
+<span class="font-['Inter'] text-[9px] uppercase tracking-widest">Timeline</span>
+</a>
+<!-- Issues (Inactive) -->
+<a class="flex items-center text-[#555555] px-3 py-1 hover:bg-[#121212] active:scale-95 transition-all" href="#">
+<span class="material-symbols-outlined text-[16px] mr-1">error_outline</span>
+<span class="font-['Inter'] text-[9px] uppercase tracking-widest">Issues</span>
+</a>
+<!-- Logs (Inactive) -->
+<a class="flex items-center text-[#555555] px-3 py-1 hover:bg-[#121212] active:scale-95 transition-all" href="#">
+<span class="material-symbols-outlined text-[16px] mr-1">terminal</span>
+<span class="font-['Inter'] text-[9px] uppercase tracking-widest">Logs</span>
+</a>
+<!-- Metrics (Inactive) -->
+<a class="flex items-center text-[#555555] px-3 py-1 hover:bg-[#121212] active:scale-95 transition-all" href="#">
+<span class="material-symbols-outlined text-[16px] mr-1">analytics</span>
+<span class="font-['Inter'] text-[9px] uppercase tracking-widest">Metrics</span>
+</a>
+</nav>
+</body></html>
