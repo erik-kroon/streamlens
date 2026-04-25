@@ -10,7 +10,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 function RootComponent() {
   return (
     <>
-      <div class="grid h-svh grid-rows-[1fr]">
+      <div class="grid h-svh min-h-0 overflow-hidden">
         <Outlet />
       </div>
       {/*<TanStackRouterDevtools />*/}

@@ -97,8 +97,8 @@ function App() {
     );
 
   return (
-    <main class="min-h-0 bg-neutral-950 text-neutral-100">
-      <div class="grid h-full min-h-0 grid-rows-[auto_1fr_auto]">
+    <main class="relative h-full min-h-0 overflow-hidden bg-neutral-950 pb-9 text-neutral-100">
+      <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]">
         <section class="border-b border-neutral-800 bg-neutral-950/95 px-4 py-3">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div class="flex min-w-0 items-center gap-3">
@@ -119,10 +119,10 @@ function App() {
           </div>
         </section>
 
-        <section class="grid min-h-0 grid-cols-1 grid-rows-[auto_minmax(340px,1fr)_minmax(300px,40vh)_auto] lg:grid-cols-[300px_minmax(0,1fr)_360px] lg:grid-rows-[minmax(0,1fr)_260px]">
+        <section class="grid min-h-0 overflow-hidden grid-cols-1 grid-rows-[auto_minmax(340px,1fr)_minmax(300px,40vh)_auto] lg:grid-cols-[340px_minmax(0,1fr)_360px] lg:grid-rows-[minmax(0,1fr)_260px]">
           <AgentPanel
             phase={agent.phase()}
-            error={controlError() ?? agent.error()}
+            controlError={controlError()}
             status={agent.status()}
             stats={agent.stats()}
             lastMessageAt={agent.lastMessageAt()}
@@ -182,21 +182,21 @@ function App() {
             <Inspector event={selectedEvent()} />
           </aside>
 
-          <section class="grid min-h-0 grid-cols-1 border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:col-end-4 lg:row-start-2 lg:grid-cols-[300px_minmax(0,1fr)] lg:border-b-0">
+          <section class="grid min-h-0 grid-cols-1 border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:col-end-4 lg:row-start-2 lg:grid-cols-[300px_minmax(0,1fr)] lg:border-l lg:border-t lg:border-b-0">
             <TopicPanel topics={topics()} />
             <CapturePanel stats={agent.stats()} events={events()} />
           </section>
         </section>
 
-        <footer class="border-t border-neutral-800 bg-neutral-950 px-4 py-2">
-          <div class="flex flex-wrap items-center gap-3 text-xs text-neutral-400">
-            <div class="flex items-center gap-2 text-emerald-300">
+        <footer class="absolute inset-x-0 bottom-0 h-9 overflow-hidden border-t border-neutral-800 bg-neutral-950 px-4">
+          <div class="flex h-full min-w-0 items-center gap-3 text-xs text-neutral-400">
+            <div class="flex shrink-0 items-center gap-2 text-emerald-300">
               <Activity size={14} />
               <span>Agent {agent.phase()}</span>
             </div>
-            <span class="text-neutral-700">/</span>
-            <span>{agent.httpUrl}</span>
-            <span class="ml-auto">Last message {formatTime(agent.lastMessageAt())}</span>
+            <span class="shrink-0 text-neutral-700">/</span>
+            <span class="min-w-0 truncate">{agent.httpUrl}</span>
+            <span class="ml-auto shrink-0">Last message {formatTime(agent.lastMessageAt())}</span>
           </div>
         </footer>
       </div>
@@ -206,7 +206,7 @@ function App() {
 
 type AgentPanelProps = {
   phase: string;
-  error: string | undefined;
+  controlError: string | undefined;
   status: AgentStatus | undefined;
   stats: CaptureStats | undefined;
   lastMessageAt: Date | undefined;
@@ -233,15 +233,15 @@ type AgentPanelProps = {
 
 function AgentPanel(props: AgentPanelProps) {
   return (
-    <aside class="min-h-0 overflow-auto border-b border-neutral-800 bg-neutral-950 lg:row-span-2 lg:border-b-0">
+    <aside class="min-h-0 overflow-y-auto overflow-x-hidden border-b border-neutral-800 bg-neutral-950 lg:row-span-2 lg:border-b-0">
       <PanelHeader icon={Wifi} title="Agent Connection" detail={props.stats?.state ?? props.status?.state ?? props.phase} />
-      <div class="space-y-4 p-4">
+      <div class="space-y-3 p-3">
         <div class="rounded-md border border-neutral-800 bg-neutral-900/70 p-3">
-          <div class="mb-3 flex items-center justify-between gap-3">
+          <div class="mb-3 flex min-w-0 items-center justify-between gap-3">
             <span class="text-xs font-medium uppercase text-neutral-500">Current Status</span>
             <StatusPill online={props.phase === "ready"} label={props.phase} compact />
           </div>
-          <dl class="grid gap-3 text-sm">
+          <dl class="grid grid-cols-2 gap-3 text-sm">
             <Metric label="Agent ID" value={props.status?.agentId ?? "Unavailable"} />
             <Metric label="Version" value={props.status?.version ?? "Unknown"} />
             <Metric label="Uptime" value={formatUptime(props.status?.uptimeMs)} />
@@ -249,12 +249,12 @@ function AgentPanel(props: AgentPanelProps) {
           </dl>
         </div>
 
-        <Show when={props.error}>
+        <Show when={props.controlError}>
           {(message) => <InlineIssue message={message()} />}
         </Show>
 
         <div class="space-y-3 rounded-md border border-neutral-800 bg-neutral-900/50 p-3">
-          <div class="flex items-center gap-2 text-xs font-medium uppercase text-neutral-500">
+          <div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-neutral-500">
             <PlugZap size={13} />
             Upstream
           </div>
@@ -263,30 +263,30 @@ function AgentPanel(props: AgentPanelProps) {
             <Field label="Bearer token" value={props.bearerToken} onInput={props.setBearerToken} type="password" />
             <Field label="Subprotocols" value={props.subprotocols} onInput={props.setSubprotocols} placeholder="json, v2" mono />
           </div>
-          <div class="grid grid-cols-[0.9fr_1.1fr] gap-2">
+          <div class="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-2">
             <Field label="API key header" value={props.apiKeyHeader} onInput={props.setApiKeyHeader} mono />
             <Field label="API key" value={props.apiKey} onInput={props.setApiKey} type="password" />
           </div>
-          <label class="grid gap-1">
+          <label class="grid min-w-0 gap-1">
             <span class="text-xs text-neutral-500">Custom headers</span>
             <textarea
-              class="field min-h-[64px] resize-none font-mono"
+              class="field min-h-[58px] w-full min-w-0 resize-none font-mono"
               placeholder={"x-stream-id: demo\nx-client: wiretap"}
               value={props.headersText}
               onInput={(event) => props.setHeadersText(event.currentTarget.value)}
             />
           </label>
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <label class="flex items-center gap-2 text-sm text-neutral-300">
+          <div class="grid gap-2">
+            <label class="flex min-w-0 items-center gap-2 text-sm text-neutral-300">
               <input
-                class="accent-cyan-300"
+                class="shrink-0 accent-cyan-300"
                 type="checkbox"
                 checked={props.autoReconnect}
                 onInput={(event) => props.setAutoReconnect(event.currentTarget.checked)}
               />
-              Auto reconnect
+              <span class="truncate">Auto reconnect</span>
             </label>
-            <div class="flex gap-2">
+            <div class="grid grid-cols-2 gap-2">
               <IconTextButton icon={PlugZap} label="Connect" onClick={props.connect} primary />
               <IconTextButton icon={RefreshCw} label="Reconnect" onClick={props.reconnect} />
             </div>
@@ -550,10 +550,10 @@ function Field(props: {
   mono?: boolean;
 }) {
   return (
-    <label class="grid gap-1">
-      <span class="text-xs text-neutral-500">{props.label}</span>
+    <label class="grid min-w-0 gap-1">
+      <span class="truncate text-xs text-neutral-500">{props.label}</span>
       <input
-        class={`field ${props.mono ? "font-mono" : ""}`}
+        class={`field w-full min-w-0 ${props.mono ? "font-mono" : ""}`}
         type={props.type ?? "text"}
         placeholder={props.placeholder}
         value={props.value}
@@ -573,22 +573,22 @@ function IconTextButton(props: {
   return (
     <button
       type="button"
-      class={`inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm transition-colors ${
+      class={`inline-flex h-9 min-w-0 items-center justify-center gap-2 rounded-md border px-3 text-sm transition-colors active:scale-[0.98] ${
         props.primary
           ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100 hover:bg-cyan-300/20"
           : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:border-neutral-500 hover:bg-neutral-800"
       }`}
       onClick={props.onClick}
     >
-      <Icon size={15} />
-      {props.label}
+      <Icon class="shrink-0" size={15} />
+      <span class="truncate">{props.label}</span>
     </button>
   );
 }
 
 function Metric(props: { label: string; value: string }) {
   return (
-    <div class="grid gap-1">
+    <div class="grid min-w-0 gap-1">
       <dt class="text-xs text-neutral-500">{props.label}</dt>
       <dd class="truncate font-mono text-xs text-neutral-200">{props.value}</dd>
     </div>
