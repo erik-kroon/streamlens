@@ -1,22 +1,16 @@
-Replace every React-specific part with **SolidJS**, and keep the rest of the architecture the same.
-
-Here is the updated PRD language you can paste into your agent:
-
----
-
 # PRD: Wiretap
 
-## Product name
+## Product Name
 
 **Wiretap**
 
-## One-liner
+## One-Liner
 
-Wiretap is a real-time event-stream debugger for WebSocket-based applications, built to inspect live streams, track topic health, detect sequence gaps and stale periods, inspect payloads, capture/replay events, and make real-time system behavior legible.
+Wiretap is a local real-time event-stream debugger for WebSocket-based applications. A Go agent captures and normalizes live streams, while a SolidJS inspector makes sequence gaps, stale topics, malformed payloads, reconnect behavior, and exportable captures visible.
 
-## Core thesis
+## Core Thesis
 
-Real-time applications fail in subtle ways: missed events, duplicate messages, sequence gaps, stale topics, reconnect bugs, malformed payloads, and UI state drifting away from stream state.
+Real-time applications fail in subtle ways: missed events, duplicate messages, sequence gaps, stale topics, reconnect bugs, malformed payloads, source lag, and UI state drifting away from stream state.
 
 Wiretap makes those failures visible.
 
@@ -26,32 +20,30 @@ It should feel like:
 Chrome DevTools Network tab
 + Wireshark-lite
 + trading-terminal stream inspector
-+ local capture/replay tool
++ local capture/export tool
 ```
 
-But focused on **application-level event streams**, not raw packets.
+Wiretap focuses on application-level event streams, not raw packets.
 
----
+## Product Goals
 
-# 1. Product goals
+### Primary Goal
 
-## Primary goal
-
-Build a polished developer tool for inspecting real-time WebSocket streams with strong frontend UX and strong systems credibility.
+Build a polished local developer tool for inspecting real-time WebSocket streams with strong frontend UX and strong systems credibility.
 
 The product should let a developer answer:
 
 - What events are arriving?
-- In what order?
-- Which topics are active or stale?
+- In what observed order did they arrive?
+- Which topics or topic/key scopes are live, quiet, or stale?
 - Did sequence numbers gap, duplicate, or arrive out of order?
-- What payload caused the UI to behave incorrectly?
-- What happened before/after a reconnect?
-- Can I capture this stream and replay it later?
+- What payload caused the UI or downstream system to behave incorrectly?
+- What happened before and after a reconnect, malformed message, pause, burst, or stale period?
+- Can I export the captured stream for later analysis or replay tooling?
 
-## Secondary goal
+### Ecosystem Goal
 
-Integrate naturally with the existing ecosystem:
+Wiretap integrates naturally with the existing local event-stream tooling ecosystem:
 
 ```text
 Tape     = deterministic market-event replay engine
@@ -59,50 +51,51 @@ Flamel   = real-time trading terminal
 Wiretap  = real-time stream debugger
 ```
 
-Ideal demo:
+The primary demo path is:
 
 ```text
-Tape streams deterministic market events
-→ Flamel renders them as a terminal
-→ Wiretap inspects the stream behavior
+Tape -> Wiretap
 ```
 
-## Tertiary goal
+The later ecosystem demo path is:
 
-Create a high-signal portfolio/interview project for a real-time fintech/frontend role.
+```text
+Tape -> Flamel -> Wiretap
+```
 
-The project should signal:
+### Portfolio Goal
+
+Wiretap should signal:
 
 - real-time systems thinking
+- Go infrastructure capability
 - frontend product taste
 - event-stream observability
-- sequence/staleness reasoning
-- Go infrastructure capability
+- sequence and staleness reasoning
 - professional developer-tool architecture
-- familiarity with **SolidJS-style fine-grained reactive UI architecture**
+- local-first capture/export design
+- familiarity with SolidJS fine-grained reactive UI architecture
 
----
+## Product Positioning
 
-# 2. Product positioning
+### What Wiretap Is
 
-## What Wiretap is
-
-Wiretap is a **local developer tool** for inspecting live real-time streams.
+Wiretap is a local developer tool for inspecting live real-time streams.
 
 It has three layers:
 
 ```text
-Wiretap Web UI
-  - SolidJS inspector interface
-
 Wiretap Agent
   - Go local capture/proxy service
+
+Wiretap Web UI
+  - SolidJS inspector interface
 
 Wiretap Desktop
   - Electrobun shell bundling UI + agent
 ```
 
-## What Wiretap is not
+### What Wiretap Is Not
 
 Wiretap is not:
 
@@ -117,13 +110,11 @@ Wiretap is not:
 
 It should stay focused:
 
-> Make real-time event stream behavior visible, inspectable, and replayable.
+> Make real-time event stream behavior visible, inspectable, and exportable.
 
----
+## Architecture Overview
 
-# 3. Architecture overview
-
-Wiretap is built in three progressively shippable layers.
+Wiretap is agent-first. The Go agent is the capture truth. The SolidJS UI is the presentation truth.
 
 ```text
 Target WebSocket Stream
@@ -135,268 +126,368 @@ Wiretap Web UI — SolidJS inspector
 Wiretap Desktop — Electrobun wrapper
 ```
 
-## Layer 1: Wiretap Web UI
+The agent owns upstream WebSocket connections, custom headers, auth, reconnect behavior, message receipt timestamps, capture sequence, normalization, stream issue detection, buffering, status APIs, and export.
 
-The browser-based inspector.
+The UI owns layout, filtering, selection, visualization, payload inspection, and interaction ergonomics. It connects to the local agent, not directly to arbitrary upstream streams.
 
-Responsibilities:
+The desktop shell packages the agent and UI into a polished local tool after the agent/UI loop is excellent.
 
-- connection UI
-- event table
-- topic health panel
-- payload inspector
-- sequence gap visualization
-- stale topic visualization
-- timeline
-- filters
-- pause/resume view
-- export UI
+## MVP Scope
 
-The Web UI should be able to run standalone and connect directly to a WebSocket stream before the Go agent exists.
-
-### Frontend stack
-
-Use:
-
-- **SolidJS**
-- **TypeScript**
-- **Solid Router** or TanStack Router if already configured and compatible
-- **TailwindCSS**
-- **shadcn-style components adapted for Solid**
-- Virtualized table/list rendering for large event streams
-- Local fine-grained stores/signals for event buffer, topic state, selected event, filters, and connection state
-
-Do **not** use React.
-
-## Layer 2: Wiretap Agent
-
-A local Go service.
-
-Responsibilities:
-
-- connect to upstream WebSocket streams
-- capture raw messages
-- timestamp messages at receipt
-- assign local capture sequence
-- parse/normalize events
-- track ring buffer
-- optionally persist captures
-- forward normalized events to UI
-- export JSONL / `.tape`
-- provide health/status API
-
-The agent should stay narrow. It is infrastructure for capture and normalization, not a full observability backend.
-
-## Layer 3: Wiretap Desktop
-
-Electrobun desktop wrapper.
-
-Responsibilities:
-
-- package the SolidJS UI as a desktop app
-- start/stop local Go agent
-- provide local file open/save
-- remember recent target URLs
-- provide polished local developer-tool experience
-
-Desktop is a distribution/polish layer, not a separate product.
-
----
-
-# 4. State management architecture
-
-## Critical rule
-
-Do **not** put every incoming event directly into component-level reactive state in a way that causes broad UI invalidation.
-
-The ingestion path must be buffered and throttled.
-
-Recommended pipeline:
+MVP is:
 
 ```text
-WebSocket receive
-→ parse raw message
-→ append to non-reactive/ring buffer storage
-→ update topic aggregates
-→ detect issues
-→ publish minimal fine-grained reactive updates
-→ render virtualized event table
+Go agent + SolidJS web UI
 ```
 
-## Solid-specific state rules
+MVP does not include Electrobun desktop packaging. The web UI can run in a browser during development, but it talks to the local agent as the canonical backend.
 
-Because SolidJS uses fine-grained reactivity, use it deliberately:
+MVP supports one upstream WebSocket stream at a time.
 
-### Use signals/stores for UI projections
+## MVP Completion Criteria
 
-Good candidates:
+MVP is complete when:
 
-- connection state
-- selected event ID
-- selected topic filter
-- visible event window
-- topic health map projection
-- stream summary metrics
-- paused/live state
-- timeline viewport
+1. The Go agent connects to one upstream WebSocket URL.
+2. The agent supports custom headers, bearer/API-key style auth, and optional WebSocket subprotocols.
+3. The agent captures raw messages with receipt timestamps and monotonic capture sequence numbers.
+4. The agent parses and normalizes the default Wiretap envelope.
+5. The agent captures malformed messages as raw events whenever possible.
+6. The agent detects schema errors, parse errors, oversized messages, sequence gaps, duplicate events, out-of-order events, and stale topic/key scopes.
+7. The agent keeps a bounded in-memory ring buffer of 10,000 events.
+8. The agent exposes local APIs for connection control, health, stats, buffered events, issues, and JSONL export.
+9. The SolidJS UI connects to the local agent and renders live capture state.
+10. The event table displays live events using capture order and fixed-height virtualization.
+11. The payload inspector shows parsed envelope, payload, raw message, issues, and metadata.
+12. Topic health uses flat rows by effective scope and tracks rate, bytes, last sequence, last message age, state, and issue counts.
+13. Sequence issues attach to the event that reveals them.
+14. Stale detection updates on a 500ms agent tick even when no new events arrive.
+15. Pause View freezes UI auto-follow only while agent capture continues.
+16. JSONL export writes the retained capture format.
+17. A local demo stream can generate normal, gap, duplicate, out-of-order, stale, malformed, oversized, and burst scenarios.
+18. A synthetic 1,000 events/sec for 10 seconds scenario does not lock the UI.
+19. Wiretap can inspect a Tape WebSocket stream that emits the default Wiretap envelope.
 
-### Avoid storing the entire high-frequency event stream in a deeply reactive store
+## MVP Exclusions
 
-Do **not** make every event a deeply reactive object if the stream may produce hundreds or thousands of events per second.
+MVP does not include:
 
-Prefer:
+- Electrobun desktop shell
+- persistent capture database
+- import/replay of exported JSONL
+- `.tape` export
+- multiple simultaneous upstream streams
+- SSE support
+- WebTransport support
+- Chrome DevTools extension
+- schema plugin system
+- OpenTelemetry correlation
+- stream diffing
+- latency histogram
+- replay server
+- protocol fuzzing
+- fault-injection proxy
+- native packet inspection
+
+## Default Stream Contract
+
+The canonical MVP stream contract is the Wiretap envelope:
+
+```ts
+type WiretapEnvelope = {
+  topic: string;
+  type: string;
+  seq?: number;
+  ts?: number | string;
+  key?: string;
+  symbol?: string;
+  payload?: unknown;
+};
+```
+
+Tape should emit this envelope for the primary demo path.
+
+Flamel-compatible streams are supported when they emit the same envelope. Flamel-specific adapters are deferred.
+
+## Agent Responsibilities
+
+The Go agent owns:
+
+- upstream WebSocket connection lifecycle
+- custom headers, bearer/API-key auth, and optional subprotocols
+- manual connect/disconnect/reconnect
+- configurable auto-reconnect
+- raw message capture
+- receive timestamp assignment
+- local capture sequence assignment
+- raw size measurement and oversized handling
+- envelope parsing and normalization
+- schema validation
+- effective key calculation
+- sequence issue detection
+- stale evaluation
+- topic health aggregation
+- rolling rate counters
+- bounded ring buffer
+- issue log
+- JSONL export
+- health/status API
+- local WebSocket feed to the UI
+
+The agent should stay narrow. It is capture and normalization infrastructure, not a cloud observability backend.
+
+## Agent API
+
+Default local port:
 
 ```text
-Mutable ring buffer / plain array
-+ reactive version counter
-+ memoized visible window
-+ virtualized rendering
+8790
 ```
 
-### Suggested pattern
+Endpoints:
 
 ```text
-eventBufferRef / plain ring buffer
-topicStateMap / mutable aggregate map
-signal: bufferVersion
-signal: selectedEventId
-signal: filters
-memo: visibleEvents
+GET  http://localhost:8790/health
+GET  http://localhost:8790/stats
+GET  http://localhost:8790/events
+GET  http://localhost:8790/issues
+GET  http://localhost:8790/topics
+POST http://localhost:8790/connect
+POST http://localhost:8790/disconnect
+POST http://localhost:8790/reconnect
+POST http://localhost:8790/clear
+GET  http://localhost:8790/export/jsonl
+WS   ws://localhost:8790/live
 ```
 
-This keeps high-frequency ingestion cheap while still allowing the UI to update predictably.
+### Connect Request
 
-## UI rendering rules
+```ts
+type ConnectRequest = {
+  url: string;
+  headers?: Record<string, string>;
+  protocols?: string[];
+  reconnect?: {
+    enabled: boolean;
+    initialDelayMs: number;
+    maxDelayMs: number;
+  };
+};
+```
 
-- Event table must be virtualized.
-- Topic health may update on animation frame or interval.
-- Payload inspector reads selected event by ID.
-- Incoming events should not trigger full app rerenders.
-- Live auto-scroll should be optional and disabled when view is paused.
+### Agent-to-UI Live Messages
 
-This is important because Wiretap itself must not fail under the stream behavior it is built to inspect.
+```ts
+type AgentToUiMessage =
+  | { type: "agent.ready"; payload: AgentStatus }
+  | { type: "agent.error"; payload: AgentError }
+  | { type: "upstream.connecting"; payload: ConnectionInfo }
+  | { type: "upstream.connected"; payload: ConnectionInfo }
+  | { type: "upstream.disconnected"; payload: ConnectionInfo }
+  | { type: "upstream.reconnecting"; payload: ConnectionInfo }
+  | { type: "event.captured"; payload: CapturedEvent }
+  | { type: "issue.detected"; payload: StreamIssue }
+  | { type: "topic.updated"; payload: TopicState }
+  | { type: "capture.stats"; payload: CaptureStats };
+```
 
----
+## Event Model
 
-# 5. MVP scope
+Wiretap keeps both the raw message and the parsed event.
 
-## P0 features
+### Captured Event
 
-### 1. WebSocket connection panel
+```ts
+type CapturedEvent = {
+  id: string;
+  connectionId: string;
+  captureSeq: number;
+  receivedAt: number;
+  raw: string;
+  rawTruncated: boolean;
+  originalSizeBytes: number;
+  sizeBytes: number;
 
-User can:
+  parsed: WiretapEnvelope | null;
+  parseError?: string;
 
-- enter target URL
-- connect
-- disconnect
-- see connection state
-- see connected duration
-- see reconnect count
-- see last message time
-- see total messages
-- see total bytes
+  topic?: string;
+  displayTopic: string;
+  type?: string;
+  displayType: string;
+  key?: string;
+  effectiveKey?: string;
+  seq?: number;
+  sourceTs?: number | string;
 
-Connection states:
+  statuses: EventStatus[];
+  issues: StreamIssue[];
+};
+```
+
+Row identity is:
+
+```ts
+id = `${connectionId}:${captureSeq}`;
+```
+
+Numeric `captureSeq` remains part of the event and export model.
+
+### Event Status
+
+```ts
+type EventStatus =
+  | "ok"
+  | "gap"
+  | "duplicate"
+  | "out_of_order"
+  | "stale_after"
+  | "schema_error"
+  | "parse_error"
+  | "unparsed"
+  | "oversized"
+  | "buffered"
+  | "replayed";
+```
+
+### Topic State
+
+Topic health rows are flat rows by effective stream scope, not nested groups.
+
+For `market.*` with `topicKey` scope, rows look like:
 
 ```text
-idle
-connecting
-connected
-disconnected
-error
+market.AAPL / AAPL
+market.MSFT / MSFT
+market.NVDA / NVDA
 ```
 
----
+```ts
+type TopicState = {
+  id: string;
+  topic: string;
+  key?: string;
+  scope: "topic" | "topicKey";
 
-### 2. Event table
+  count: number;
+  bytes: number;
 
-Main center surface.
+  firstSeenAt: number;
+  lastSeenAt: number;
+  lastEventId?: string;
+  lastSeq?: number;
 
-Columns:
+  eventsPerSec: number;
+  bytesPerSec: number;
+
+  stale: boolean;
+  staleSince?: number;
+  staleThresholdMs?: number | null;
+
+  gapCount: number;
+  duplicateCount: number;
+  outOfOrderCount: number;
+  parseErrorCount: number;
+  schemaErrorCount: number;
+};
+```
+
+### Stream Issue
+
+```ts
+type StreamIssue = {
+  id: string;
+  eventId?: string;
+  topic?: string;
+  key?: string;
+
+  type:
+    | "gap"
+    | "duplicate"
+    | "out_of_order"
+    | "stale"
+    | "schema_error"
+    | "parse_error"
+    | "oversized"
+    | "reconnect"
+    | "disconnect";
+
+  severity: "info" | "warning" | "error";
+  message: string;
+  createdAt: number;
+  details?: unknown;
+};
+```
+
+Sequence issues attach to the event that reveals them.
+
+If sequence jumps from `1022` to `1025`, event `1025` owns the issue:
+
+```ts
+{
+  type: "gap",
+  eventId: event.id,
+  expected: 1023,
+  actual: 1025,
+  missing: [1023, 1024]
+}
+```
+
+Stale issues caused by time passing are topic-level issues without `eventId`. They may include `lastEventId` in `details`.
+
+## Envelope Normalization Rules
+
+### Missing Topic
+
+Missing `topic`:
+
+- captures the event
+- displays topic as `unknown`
+- marks `schema_error`
+- blocks normal topic-scoped logic
+- may update a special unknown/error bucket
+
+### Missing Type
+
+Missing `type`:
+
+- captures the event
+- displays type as `message`
+- marks `schema_error`
+- updates topic health if topic exists
+- allows sequence detection if topic and sequence exist
+
+### Missing Sequence
+
+Missing `seq`:
+
+- captures the event
+- creates no sequence issue
+- updates topic last seen, rate, bytes, and stale freshness if topic exists
+
+### Effective Key
+
+The effective key is:
+
+```ts
+effectiveKey = envelope.key ?? envelope.symbol ?? undefined;
+```
+
+If a rule wants `topicKey` but no key or symbol exists, fall back to topic-level tracking.
+
+Missing key/symbol is not a schema error in MVP.
+
+## Sequence Detection
+
+MVP detects sequence issues per configured sequence scope.
+
+Default sequence scope:
 
 ```text
-TIME
-ΔMS
-TOPIC
-TYPE
-SEQ
-KEY/SYMBOL
-SIZE
-STATUS
+topic + effectiveKey
 ```
 
-Example:
-
-```text
-12:01:02.120  +14ms  market.AAPL  trade_print   1021  AAPL  184B  OK
-12:01:02.128  +08ms  market.AAPL  quote_update  1022  AAPL  221B  OK
-12:01:03.044  +916ms market.AAPL  quote_update  1025  AAPL  220B  GAP +2
-```
-
-Required behavior:
-
-- virtualized rows
-- newest/live auto-scroll mode
-- pause view mode
-- click row to inspect payload
-- filter by topic/type/status/key
-- stable row identity
-
----
-
-### 3. Topic health panel
-
-Left rail.
-
-Tracks topic/key health.
-
-Columns:
-
-```text
-TOPIC
-RATE
-LAST SEQ
-LAST MSG AGE
-STATE
-GAPS
-ERRORS
-```
-
-Example:
-
-```text
-market.AAPL     184/s    10241    82ms     LIVE     0
-market.MSFT      96/s     8812    1.4s     STALE    2
-orders             0/s       42     12s     QUIET    0
-portfolio          1/s      108    4.2s     STALE    0
-```
-
-Topic health should support:
-
-- event count
-- events/sec
-- bytes/sec
-- last sequence
-- last event receive time
-- stale state
-- gap count
-- duplicate count
-- out-of-order count
-- schema/parse errors
-
----
-
-### 4. Sequence gap detection
-
-Wiretap detects sequence issues per configured sequence scope.
-
-Default MVP scope:
-
-```text
-topic + key
-```
-
-If `key` is absent, fall back to:
+If effective key is absent, fall back to:
 
 ```text
 topic
@@ -427,33 +518,59 @@ type SequenceIssue =
 UI must show:
 
 - issue badge on event row
-- issue count on topic
-- issue marker on timeline
+- issue count on topic health row
+- issue in compact issue list/strip
 - issue details in payload inspector
 
----
+## Stale Detection
 
-### 5. Stale topic detection
+Each topic rule can define a freshness threshold and stale scope.
 
-Each topic can have a freshness threshold.
+Default rules:
 
-Default config:
-
-```json
-{
-  "market.*": { "staleMs": 1000, "seqMode": "topicKey" },
-  "orders": { "staleMs": null, "seqMode": "topic" },
-  "portfolio": { "staleMs": 5000, "seqMode": "topic" },
-  "system": { "staleMs": 10000, "seqMode": "topic" }
-}
+```ts
+const defaultTopicRules = [
+  {
+    pattern: "market.*",
+    seqScope: "topicKey",
+    staleScope: "topicKey",
+    staleMs: 1000,
+  },
+  {
+    pattern: "orders",
+    seqScope: "topic",
+    staleScope: "none",
+    staleMs: null,
+  },
+  {
+    pattern: "portfolio",
+    seqScope: "topic",
+    staleScope: "topic",
+    staleMs: 5000,
+  },
+  {
+    pattern: "system",
+    seqScope: "topic",
+    staleScope: "topic",
+    staleMs: 10000,
+  },
+  {
+    pattern: "*",
+    seqScope: "topicKey",
+    staleScope: "none",
+    staleMs: null,
+  },
+];
 ```
 
 Rules:
 
 - `staleMs = null` means the topic can be quiet without being stale.
+- `staleScope = "none"` disables stale detection for that rule.
 - stale is computed from receive time by default.
-- if event source timestamp exists, show source lag separately.
-- stale state must be visible in topic panel and timeline.
+- if an event source timestamp exists, show source lag separately.
+- stale transitions update on a 500ms agent tick even when no new events arrive.
+- stale state must be visible in the topic panel, header metrics, issue list/strip, and payload metadata where relevant.
 
 Important distinction:
 
@@ -463,13 +580,265 @@ Events arriving late        = source lag
 Topic naturally quiet       = not stale if staleMs is null
 ```
 
----
+## Rate Calculations
 
-### 6. Payload inspector
+Use a 1-second rolling window for MVP.
+
+Track:
+
+- global events/sec
+- global bytes/sec
+- events/sec per topic scope
+- bytes/sec per topic scope
+
+## Buffering and Size Limits
+
+MVP buffer:
+
+```text
+10,000 events in memory
+```
+
+Default message limits:
+
+```ts
+maxMessageBytes = 1_000_000;
+maxBufferEvents = 10_000;
+maxRawPreviewBytes = 100_000;
+```
+
+Malformed messages are captured as raw whenever possible.
+
+Oversized messages:
+
+- do not keep full huge raw payloads in memory
+- keep a truncated raw preview
+- preserve `rawTruncated = true`
+- preserve `originalSizeBytes`
+- mark the event as `oversized`
+- export exactly what was retained
+
+Wiretap should not silently drop a message unless it cannot be safely represented.
+
+## JSONL Export
+
+MVP exports a stable retained capture format, not the full internal mutable model.
+
+JSONL event shape:
+
+```ts
+type WiretapExportEvent = {
+  captureSeq: number;
+  connectionId: string;
+  receivedAt: number;
+  raw: string;
+  rawTruncated: boolean;
+  originalSizeBytes: number;
+  parsed: WiretapEnvelope | null;
+  parseError?: string;
+  sizeBytes: number;
+};
+```
+
+MVP export excludes:
+
+- derived statuses
+- derived issues
+- topic state
+- UI-only fields
+
+Issues can be recomputed later with newer rules.
+
+## Demo Stream
+
+MVP includes a local demo WebSocket stream that emits the same default Wiretap envelope as Tape.
+
+Scenarios:
+
+- normal stream
+- sequence gap
+- duplicate
+- out-of-order
+- stale topic
+- malformed message
+- oversized message
+- 1,000 events/sec burst for 10 seconds
+
+The demo stream is for local development and deterministic demonstrations. Tape remains the canonical realistic source.
+
+## SolidJS Web UI
+
+Use:
+
+- SolidJS
+- TypeScript
+- TanStack Solid Router
+- TailwindCSS
+- shadcn-style components adapted for Solid
+- lucide-solid icons
+- fixed-height virtualized event table/list rendering
+- local fine-grained stores/signals for UI projections
+
+Do not use React.
+
+### UI State Rules
+
+The UI must not put every incoming event into deeply reactive component state.
+
+The UI receives agent updates and publishes minimal fine-grained projections:
+
+- connection state
+- selected event ID
+- selected topic/key/status/type filters
+- visible event window
+- topic health projection
+- stream summary metrics
+- paused/live-follow state
+- buffered count since pause
+
+Incoming events should not trigger full app rerenders.
+
+## Connection UI
+
+User can:
+
+- enter target WebSocket URL
+- enter optional custom headers
+- enter optional bearer/API key value
+- enter optional comma-separated WebSocket subprotocols
+- connect
+- disconnect
+- manually reconnect
+- enable/disable auto-reconnect
+- see connection state
+- see connected duration
+- see reconnect count
+- see last connected time
+- see last disconnected time
+- see last message time
+- see total messages
+- see total bytes
+
+Connection states:
+
+```text
+idle
+connecting
+connected
+disconnected
+reconnecting
+error
+```
+
+## Stream Health Summary
+
+Top strip example:
+
+```text
+WIRETAP · CONNECTED · ws://localhost:8787/stream · 12,430 events · 184 msg/s · 2 gaps · 1 stale · 0 parse errors
+```
+
+Metrics:
+
+- connection state
+- target URL
+- total events
+- total bytes
+- event rate
+- byte rate
+- topic scope count
+- stale topic count
+- gap count
+- duplicate count
+- out-of-order count
+- parse/schema error count
+- buffer size
+- pause/live-follow state
+
+## Event Table
+
+The event table is the main center surface.
+
+Columns:
+
+```text
+TIME
+ΔMS
+TOPIC
+TYPE
+SEQ
+KEY/SYMBOL
+SIZE
+STATUS
+```
+
+Example:
+
+```text
+12:01:02.120  +14ms  market.AAPL  trade_print   1021  AAPL  184B  OK
+12:01:02.128  +08ms  market.AAPL  quote_update  1022  AAPL  221B  OK
+12:01:03.044  +916ms market.AAPL  quote_update  1025  AAPL  220B  GAP +2
+```
+
+Required behavior:
+
+- fixed-height virtualized rows
+- stable row identity using `connectionId:captureSeq`
+- capture order is the canonical order
+- source timestamp is diagnostic metadata only
+- newest/live-follow mode
+- pause view mode
+- click row to inspect payload
+- filter by topic, type, status/issue, and key/symbol
+- issue badges on rows
+
+Full payload search is deferred.
+
+## Topic Health Panel
+
+Left rail tracks stream health scopes.
+
+Columns:
+
+```text
+TOPIC
+KEY
+RATE
+LAST SEQ
+LAST MSG AGE
+STATE
+GAPS
+ERRORS
+```
+
+Example:
+
+```text
+market.AAPL     AAPL    184/s    10241    82ms     LIVE     0
+market.MSFT     MSFT     96/s     8812    1.4s     STALE    2
+orders          -         0/s       42     12s     QUIET    0
+portfolio       -         1/s      108    4.2s     STALE    0
+```
+
+Topic health should support:
+
+- event count
+- events/sec
+- bytes/sec
+- last sequence
+- last event receive time
+- stale state
+- gap count
+- duplicate count
+- out-of-order count
+- schema/parse errors
+- click row to filter
+
+## Payload Inspector
 
 Right rail.
 
-Click event → show:
+Click event to show:
 
 - parsed envelope
 - formatted JSON payload
@@ -478,6 +847,7 @@ Click event → show:
 - source timestamp if present
 - source lag
 - payload size
+- raw truncation metadata
 - connection ID
 - topic/key
 - sequence state
@@ -494,11 +864,9 @@ Issues
 Metadata
 ```
 
----
+## Pause View
 
-### 7. Pause live view while buffering continues
-
-User can pause the visible event table while capture continues.
+User can pause live-follow while agent capture continues.
 
 States:
 
@@ -507,12 +875,26 @@ live
 paused_view
 ```
 
+Pause means:
+
+```text
+freeze auto-follow / auto-scroll
+```
+
+Pause does not mean:
+
+```text
+stop agent capture, aggregation, filters, or stale evaluation
+```
+
 When paused:
 
-- event table stops auto-scrolling
-- incoming events still enter the buffer
-- header shows buffered count since pause
-- topic health still updates
+- event table stops auto-following latest events
+- incoming events still enter the agent buffer
+- topic health continues updating
+- stale detection continues ticking
+- filters operate over the current captured buffer
+- header shows event count captured since pause
 - user can inspect historical events
 
 When resumed:
@@ -520,227 +902,32 @@ When resumed:
 - event table jumps back to latest
 - buffered count resets
 
----
+## Issue List / Strip
 
-### 8. Replay/capture buffer
+MVP surfaces issues through:
 
-MVP buffer:
+- header metrics
+- event-row badges
+- topic health counts
+- payload inspector issue details
+- compact issue list/strip
 
-```text
-10,000 events in memory
-```
+The issue list/strip shows:
 
-Capabilities:
+- recent gaps
+- duplicates
+- out-of-order events
+- stale transitions
+- parse errors
+- schema errors
+- oversized messages
+- reconnect/disconnect events
 
-- keep recent events
-- inspect previous events
-- export buffer as JSONL
-- export selected range
-- clear buffer
+Full event density timeline, stale intervals, reconnect regions, and click-to-jump timeline behavior are deferred.
 
-Future:
+## UI Information Architecture
 
-- persistent capture DB
-- `.tape` export
-- capture replay
-
----
-
-### 9. Stream health summary
-
-Top strip.
-
-Example:
-
-```text
-WIRETAP · CONNECTED · 4 topics · 12,430 events · 184 msg/s · 2 gaps · 1 stale topic · 0 parse errors
-```
-
-Metrics:
-
-- connection state
-- total events
-- total bytes
-- event rate
-- byte rate
-- topic count
-- stale topic count
-- gap count
-- duplicate count
-- out-of-order count
-- parse/schema error count
-- buffer size
-
----
-
-# 6. Event model
-
-Wiretap must keep both the raw message and the parsed event.
-
-## Default event envelope
-
-Wiretap should support this default envelope:
-
-```ts
-type WiretapEventEnvelope = {
-  topic?: string;
-  type?: string;
-  seq?: number;
-  ts?: number | string;
-  key?: string;
-  symbol?: string;
-  payload?: unknown;
-};
-```
-
-Events that do not match the expected envelope should still be captured and shown as `UNPARSED` or `SCHEMA_ERROR`.
-
-## Captured event
-
-```ts
-type CapturedEvent = {
-  id: string;
-  connectionId: string;
-  captureSeq: number;
-  receivedAt: number;
-  raw: string;
-  sizeBytes: number;
-
-  parsed: WiretapEventEnvelope | null;
-  parseError?: string;
-
-  topic?: string;
-  type?: string;
-  key?: string;
-  seq?: number;
-  sourceTs?: number | string;
-
-  statuses: EventStatus[];
-  issues: StreamIssue[];
-};
-```
-
-## Event status
-
-```ts
-type EventStatus =
-  | "ok"
-  | "gap"
-  | "duplicate"
-  | "out_of_order"
-  | "stale_after"
-  | "schema_error"
-  | "parse_error"
-  | "unparsed"
-  | "buffered"
-  | "replayed";
-```
-
-## Topic state
-
-```ts
-type TopicState = {
-  id: string;
-  topic: string;
-  key?: string;
-
-  count: number;
-  bytes: number;
-
-  firstSeenAt: number;
-  lastSeenAt: number;
-  lastSeq?: number;
-
-  eventsPerSec: number;
-  bytesPerSec: number;
-
-  stale: boolean;
-  staleSince?: number;
-  staleThresholdMs?: number | null;
-
-  gapCount: number;
-  duplicateCount: number;
-  outOfOrderCount: number;
-  parseErrorCount: number;
-  schemaErrorCount: number;
-};
-```
-
-## Stream issue
-
-```ts
-type StreamIssue = {
-  id: string;
-  eventId?: string;
-  topic?: string;
-  key?: string;
-
-  type:
-    | "gap"
-    | "duplicate"
-    | "out_of_order"
-    | "stale"
-    | "schema_error"
-    | "parse_error"
-    | "reconnect"
-    | "disconnect";
-
-  severity: "info" | "warning" | "error";
-
-  message: string;
-  createdAt: number;
-
-  details?: unknown;
-};
-```
-
----
-
-# 7. Agent protocol
-
-## Agent-to-UI WebSocket
-
-Endpoint:
-
-```text
-ws://localhost:8790/events
-```
-
-Messages:
-
-```ts
-type AgentToUiMessage =
-  | { type: "agent.ready"; payload: AgentStatus }
-  | { type: "agent.error"; payload: AgentError }
-  | { type: "upstream.connecting"; payload: ConnectionInfo }
-  | { type: "upstream.connected"; payload: ConnectionInfo }
-  | { type: "upstream.disconnected"; payload: ConnectionInfo }
-  | { type: "event.captured"; payload: CapturedEvent }
-  | { type: "issue.detected"; payload: StreamIssue }
-  | { type: "capture.stats"; payload: CaptureStats };
-```
-
-## UI-to-Agent commands
-
-```ts
-type UiToAgentMessage =
-  | {
-      type: "connect";
-      payload: { url: string; headers?: Record<string, string> };
-    }
-  | { type: "disconnect" }
-  | { type: "clear_buffer" }
-  | {
-      type: "export_capture";
-      payload: { format: "jsonl" | "tape"; range?: TimeRange };
-    };
-```
-
----
-
-# 8. UI information architecture
-
-## Top bar
+### Top Bar
 
 Contains:
 
@@ -752,39 +939,32 @@ Contains:
 - gap count
 - stale topics
 - parse errors
-- pause/live state
+- pause/live-follow state
 - export button
 
-Example:
-
-```text
-WIRETAP · CONNECTED · ws://localhost:8787/stream · 12,430 events · 184 msg/s · 2 gaps · 1 stale · 0 parse errors
-```
-
-## Left rail
+### Left Rail
 
 Topic health.
 
 Main interactions:
 
-- click topic to filter
+- click topic scope to filter
 - show live/stale/quiet state
 - show rates and issues
 
-## Center
+### Center
 
 Event table.
 
 Main interactions:
 
 - filter
-- sort
 - select event
-- pause/resume live
+- pause/resume live-follow
 - jump to latest
-- jump to issue
+- jump to issue from issue list/strip
 
-## Right rail
+### Right Rail
 
 Payload inspector.
 
@@ -796,165 +976,22 @@ Tabs:
 - Issues
 - Metadata
 
-## Bottom
+### Bottom
 
-Timeline / issue strip.
+Compact issue list/strip.
 
 Shows:
 
-- event density
-- issue markers
-- stale intervals
-- selected event location
+- recent issue events
+- topic-level stale transitions
+- reconnect/disconnect events
+- click-to-select issue/event where applicable
 
----
-
-# 9. P1 features
-
-## 1. Go local agent
-
-Add `wiretap-agent`.
-
-Example command:
-
-```bash
-wiretap-agent --target ws://localhost:8787/stream --port 8790
-```
-
-Agent exposes:
-
-```text
-ws://localhost:8790/events
-GET  http://localhost:8790/health
-POST http://localhost:8790/connect
-POST http://localhost:8790/disconnect
-GET  http://localhost:8790/stats
-GET  http://localhost:8790/captures
-POST http://localhost:8790/captures/export
-```
-
-Agent responsibilities:
-
-- connect to upstream target stream
-- receive raw messages
-- timestamp `receivedAt`
-- assign `captureSeq`
-- forward to UI
-- keep ring buffer
-- export JSONL
-- expose stats
-
----
-
-## 2. Timeline view
-
-Bottom strip.
-
-Visualize:
-
-- event density
-- gaps
-- duplicates
-- out-of-order events
-- stale intervals
-- reconnects
-- selected event
-
-The timeline does not need to be complex. A simple canvas/SVG strip is enough.
-
----
-
-## 3. Capture export to `.tape`
-
-Export captured stream to Tape-compatible format.
-
-This connects the ecosystem:
-
-```text
-live stream
-→ Wiretap capture
-→ .tape file
-→ Tape replay
-→ Flamel / Geber / Wiretap
-```
-
-MVP may export JSONL first, then `.tape`.
-
----
-
-## 4. Configurable topic rules
-
-Allow user to configure:
-
-- topic pattern
-- stale threshold
-- sequence mode
-- key extraction path
-- topic extraction path
-- timestamp extraction path
-
-Example:
-
-```json
-{
-  "topicRules": [
-    {
-      "pattern": "market.*",
-      "staleMs": 1000,
-      "seqMode": "topicKey",
-      "keyPath": "$.symbol",
-      "seqPath": "$.seq",
-      "sourceTsPath": "$.ts"
-    }
-  ]
-}
-```
-
----
-
-## 5. Reconnect/resync inspection
-
-Highlight lifecycle events:
-
-```text
-CONNECTED
-DISCONNECTED
-RECONNECTING
-RECONNECTED
-RESYNC_REQUESTED
-SNAPSHOT_APPLIED
-RESYNC_COMPLETE
-```
-
-If upstream emits system events, Wiretap should detect and classify them.
-
----
-
-# 10. P2 features
-
-Explicitly not MVP:
-
-- SSE support
-- WebTransport support
-- multiple simultaneous upstream streams
-- Chrome DevTools extension
-- persistent local capture database
-- schema plugin system
-- OpenTelemetry correlation
-- stream diffing
-- latency histogram
-- replay server
-- protocol fuzzing
-- fault-injection proxy
-- native packet inspection
-
----
-
-# 11. UI/design direction
+## UI Design Direction
 
 Wiretap should feel like a serious developer tool.
 
-## Good references
+Good references:
 
 - Chrome DevTools Network tab
 - observability tools
@@ -962,7 +999,7 @@ Wiretap should feel like a serious developer tool.
 - trading terminal debug panels
 - dense operator workspaces
 
-## Visual principles
+Visual principles:
 
 - dense but calm
 - low ceremony
@@ -973,7 +1010,7 @@ Wiretap should feel like a serious developer tool.
 - terse labels
 - inspectability over decoration
 
-## Avoid
+Avoid:
 
 - generic dashboard look
 - big cards everywhere
@@ -981,132 +1018,175 @@ Wiretap should feel like a serious developer tool.
 - colorful but shallow charts
 - overexplaining the product on every panel
 
----
+## Non-Functional Requirements
 
-# 12. Non-functional requirements
+### Performance
 
-## Performance
-
-Wiretap must handle at least:
+Wiretap MVP must handle:
 
 ```text
-1,000 events/sec for short bursts
+1,000 events/sec for 10 seconds
 10,000 event in-memory buffer
 virtualized table rendering
-throttled topic aggregation updates
+500ms stale evaluation tick
+1-second rolling rate windows
 ```
+
+Acceptance:
+
+- no browser tab freeze
+- event buffer caps correctly
+- summary metrics update
+- topic aggregation remains current
+- event table remains usable
+- payload inspector remains usable after burst
+- pause/resume still works
 
 Stretch target:
 
 ```text
-5,000 events/sec burst ingestion without UI lockup
+5,000 events/sec burst for 5 seconds
 ```
 
-## Reliability
+### Reliability
 
-Wiretap should not lose capture continuity just because the user pauses the view.
+Wiretap should not lose capture continuity just because the user pauses the view or reloads the UI. The agent remains the capture owner.
 
-## Inspectability
+### Inspectability
 
 Every issue should be explainable:
 
 - where it happened
-- which topic/key
-- which event triggered it
+- which topic/key scope it belongs to
+- which event triggered it, if any
 - what expected sequence was
 - what actual sequence was
+- what range was missing
+- whether the issue is parse, schema, sequence, stale, reconnect, disconnect, or size-related
 
-## Local-first
+### Local-First
 
-MVP should work locally without cloud services.
+MVP works locally without cloud services.
 
-## Security
+### Security
 
 Do not send captured stream data to any external service.
 
----
+Secrets supplied for upstream connection should stay local to the agent and should not be persisted unless the user explicitly chooses a saved profile in a later version.
 
-# 13. Acceptance criteria
+## User Stories
 
-## P0 acceptance
+1. As a developer, I want to connect Wiretap to a local WebSocket stream, so that I can inspect live application events.
+2. As a developer, I want to provide custom headers or bearer/API-key auth, so that I can inspect streams that require authenticated connections.
+3. As a developer, I want the agent to keep capturing while I reload the UI, so that I do not lose stream continuity.
+4. As a developer, I want events ordered by capture sequence, so that I can understand observed stream order.
+5. As a developer, I want malformed messages captured as raw events, so that bad payloads are visible instead of disappearing.
+6. As a developer, I want oversized messages represented with truncation metadata, so that huge payloads do not crash the tool.
+7. As a developer, I want topic/key health rows, so that I can see which stream scopes are live, quiet, or stale.
+8. As a developer, I want sequence gaps flagged on the event that reveals them, so that I can debug missing events quickly.
+9. As a developer, I want duplicate and out-of-order events flagged, so that I can detect replay or ordering bugs.
+10. As a developer, I want stale topics to update without new messages arriving, so that silence becomes visible.
+11. As a developer, I want to click an event and inspect parsed, raw, issue, and metadata views, so that I can understand the exact payload and context.
+12. As a developer, I want to pause live-follow while capture continues, so that I can inspect historical events without losing new data.
+13. As a developer, I want filters for topic, type, status, and key, so that I can narrow a noisy stream.
+14. As a developer, I want a compact issue list, so that I can jump to recent stream problems.
+15. As a developer, I want JSONL export of the retained capture, so that I can share or analyze captured events later.
+16. As a developer, I want a deterministic demo stream, so that I can reproduce gaps, stale periods, malformed messages, and bursts without depending on another service.
+17. As a developer, I want Wiretap to handle 1,000 events/sec bursts, so that the debugger does not fail under the stream behavior it is built to inspect.
+18. As a developer, I want Wiretap to inspect Tape streams, so that I can demonstrate deterministic real-time behavior and debugging.
 
-Wiretap is MVP-complete when:
+## Milestone Plan
 
-1. User can connect directly to a WebSocket stream.
-2. Incoming events appear in a virtualized event table.
-3. Wiretap parses default event envelopes.
-4. Topic health panel tracks rates, last event age, gaps, duplicates, out-of-order events.
-5. Sequence gap detection works for topic/key streams.
-6. Stale detection works using configurable thresholds.
-7. Payload inspector shows parsed, raw, metadata, and issue details.
-8. User can pause live view while capture continues.
-9. User can export buffered events as JSONL.
-10. Wiretap can inspect a Tape or Flamel WebSocket stream.
-
-## P1 acceptance
-
-Wiretap is v1-complete when:
-
-1. Go agent can connect to upstream WebSocket streams.
-2. SolidJS Web UI can connect to local agent.
-3. Agent forwards captured events to UI.
-4. Agent exposes health/stats API.
-5. Agent exports captures.
-6. Timeline shows density/issues/stale periods.
-7. Basic `.tape` export exists.
-8. Electrobun shell can launch the UI.
-
----
-
-# 14. Milestone plan
-
-## Milestone 1: SolidJS Web UI skeleton
+### Milestone 1: Agent Protocol + Web UI Shell
 
 Build:
 
-- app shell
+- Go agent package
+- local health endpoint
+- local live WebSocket endpoint
+- typed Agent-to-UI protocol
+- SolidJS app shell
 - top bar
-- left topic panel
+- connection panel
+- left topic panel placeholder
 - center event table placeholder
-- right payload inspector
-- bottom timeline placeholder
+- right payload inspector placeholder
+- bottom issue strip placeholder
 
 Acceptance:
 
-- UI layout exists
-- fake events can populate all panels
-- Solid fine-grained state model is established
+- UI connects to local agent
+- agent publishes readiness/status messages
+- UI renders connection state from agent protocol
 
----
-
-## Milestone 2: Direct WebSocket capture
+### Milestone 2: Agent Upstream Capture
 
 Build:
 
-- URL input
-- connect/disconnect
-- receive raw messages
-- parse default envelope
-- append to ring buffer
-- show events in table
+- upstream WebSocket client
+- connect/disconnect/reconnect commands
+- custom headers
+- bearer/API-key auth support
+- optional subprotocols
+- receive timestamps
+- capture sequence
+- ring buffer
 
 Acceptance:
 
-- connects to Tape/Flamel stream
-- events appear live
-- selected event appears in inspector
+- agent connects to Tape stream
+- agent captures raw messages
+- UI receives live captured events
+- agent survives UI reload
 
----
-
-## Milestone 3: Topic health + sequence detection
+### Milestone 3: Agent Normalization + Export
 
 Build:
 
-- topic/key grouping
-- event rates
-- last seq
-- gap/duplicate/out-of-order detection
-- status badges
+- default envelope parser
+- schema validation
+- effective key logic
+- malformed JSON handling
+- oversized raw truncation
+- JSONL export endpoint
+- Go tests for parser/export behavior
+
+Acceptance:
+
+- valid envelopes parse
+- malformed JSON is captured
+- schema errors are represented
+- oversized messages are retained safely
+- JSONL export writes retained capture format
+
+### Milestone 4: Event Table + Payload Inspector
+
+Build:
+
+- fixed-height virtualized event table
+- capture-order row rendering
+- row selection
+- parsed/payload/raw/issues/metadata inspector tabs
+- event status badges
+
+Acceptance:
+
+- events remain usable under live updates
+- selected event details are inspectable
+- source timestamp is shown as metadata only
+
+### Milestone 5: Topic Health + Sequence Detection
+
+Build:
+
+- topic/key scope aggregation
+- 1-second rolling rates
+- last sequence tracking
+- gap detection
+- duplicate detection
+- out-of-order detection
+- issue attachment to revealing event
+- topic health panel
 
 Acceptance:
 
@@ -1114,79 +1194,75 @@ Acceptance:
 - duplicate sequence creates duplicate issue
 - out-of-order sequence creates issue
 - topic panel reflects counts
+- issue details are inspectable
 
----
-
-## Milestone 4: Stale detection + pause mode
+### Milestone 6: Stale Detection + Pause View
 
 Build:
 
-- topic stale rules
-- stale indicators
-- pause live view
-- buffered count
-- resume live
+- default topic rules
+- 500ms agent stale evaluation tick
+- stale issue transitions
+- pause live-follow
+- buffered count since pause
+- resume live-follow
 
 Acceptance:
 
-- market topic becomes stale after threshold
-- paused view stops scrolling but capture continues
+- market topic/key scope becomes stale after threshold
+- stale state updates without new events
+- paused view stops auto-following but agent capture continues
 - resume jumps to latest
 
----
-
-## Milestone 5: Export + filters
+### Milestone 7: Filters + Issue Strip + Demo Stream
 
 Build:
 
-- topic/type/status filters
-- payload search
-- export JSONL
-- clear buffer
+- topic/type/status/key filters
+- compact issue list/strip
+- jump-to-event from issue
+- local demo WebSocket stream
+- normal/gap/duplicate/out-of-order/stale/malformed/oversized scenarios
 
 Acceptance:
 
-- exported JSONL contains captured raw/parsed events
 - filters work without breaking live capture
+- issue strip exposes recent problems
+- demo stream reproduces deterministic issue scenarios
 
----
-
-## Milestone 6: Go agent
+### Milestone 8: Load Scenario
 
 Build:
 
-- local Go service
-- upstream WebSocket client
-- local WebSocket to UI
-- health endpoint
-- stats endpoint
-- ring buffer
+- 1,000 events/sec for 10 seconds demo scenario
+- performance instrumentation
+- UI responsiveness checks
 
 Acceptance:
 
-- UI connects to agent instead of upstream
-- agent captures and forwards events
-- agent survives UI reload
+- no browser tab freeze
+- agent buffer caps correctly
+- summary metrics update
+- virtualized table remains usable
+- payload inspector remains usable after burst
+- pause/resume still works
 
----
-
-## Milestone 7: Timeline
+### Milestone 9: Timeline
 
 Build:
 
 - event density visualization
 - issue markers
 - stale interval markers
+- reconnect/disconnect markers
 - click-to-jump
 
 Acceptance:
 
 - gaps and stale periods are visible over time
-- selecting timeline region filters/jumps event table
+- selecting timeline region filters or jumps event table
 
----
-
-## Milestone 8: Electrobun desktop shell
+### Milestone 10: Electrobun Desktop Shell
 
 Build:
 
@@ -1201,11 +1277,9 @@ Acceptance:
 - desktop app connects to local streams
 - capture export uses native file save
 
----
+## Demo Scenario
 
-# 15. Demo scenario
-
-Best demo:
+Best MVP demo:
 
 1. Start Tape:
 
@@ -1213,63 +1287,53 @@ Best demo:
 tape stream demo.tape --port 8787 --speed 10x --chaos gaps
 ```
 
-2. Open Wiretap.
-3. Connect to:
+2. Start Wiretap agent.
+3. Open Wiretap UI.
+4. Connect to:
 
 ```text
 ws://localhost:8787/stream
 ```
 
-4. Show live event table.
-5. Show topic health.
-6. Show gap detection when chaos mode skips sequences.
-7. Show stale detection when quote stream pauses.
-8. Inspect a malformed or gapped payload.
-9. Pause live view while capture continues.
-10. Export capture as JSONL or `.tape`.
-11. Optionally open Flamel consuming same stream.
+5. Show live event table.
+6. Show topic health.
+7. Show gap detection when Tape skips sequences.
+8. Show stale detection when a market topic pauses.
+9. Inspect a malformed or gapped payload.
+10. Pause live-follow while agent capture continues.
+11. Export capture as JSONL.
 
-This creates the narrative:
+Demo stream can reproduce the same story without Tape installed, but Tape remains the canonical realistic source.
 
-> Tape produces deterministic stream behavior, Flamel renders it, and Wiretap explains it.
-
----
-
-# 16. README positioning
+## README Positioning
 
 Use this in the README:
 
 ```md
 # Wiretap
 
-Wiretap is a real-time event-stream debugger for WebSocket-based applications.
+Wiretap is a local real-time event-stream debugger for WebSocket-based applications.
 
-It connects to live streams, captures events into a local replay buffer, tracks topic health, detects sequence gaps, duplicate and out-of-order events, visualizes stale periods, and provides a payload inspector for debugging real-time systems.
+A Go agent connects to live streams, captures events into a bounded local buffer, tracks topic health, detects sequence gaps, duplicate and out-of-order events, visualizes stale periods, and exposes a SolidJS inspector for debugging real-time systems.
 
 Wiretap was built for trading-terminal style applications where stream correctness, freshness, reconnect behavior, and event ordering matter.
-
-The inspector UI is built with SolidJS to take advantage of fine-grained reactivity for high-frequency event streams.
 ```
 
----
+## CV / Interview Positioning
 
-# 17. CV / interview positioning
+General version:
 
-## General version
+> Built Wiretap, a Go + SolidJS real-time WebSocket stream debugger that captures event streams, tracks topic health, detects sequence gaps and stale periods, inspects payloads, and exports stable JSONL captures for deterministic debugging.
 
-> Built Wiretap, a SolidJS-based real-time WebSocket stream debugger that captures event streams, tracks topic health, detects sequence gaps and stale periods, inspects payloads, and exports replay buffers for deterministic debugging.
+Alchemy-specific version:
 
-## Alchemy-specific version
+> Built Wiretap, a local developer tool for debugging real-time trading terminal streams, with a Go capture agent, SolidJS inspector, topic health, stale-state visualization, sequence-gap detection, payload inspection, reconnect tracking, and capture export.
 
-> Built Wiretap, a SolidJS developer tool for debugging real-time trading terminal streams, with topic health, stale-state visualization, sequence-gap detection, payload inspection, reconnect tracking, and replay-buffer export.
+Strong interview explanation:
 
-## Strong interview explanation
+> After building Flamel, I wanted tooling that made real-time stream behavior visible. Wiretap is the tool I wished I had while debugging stale state, reconnects, sequence gaps and malformed events. A local Go agent captures and normalizes the stream, while a SolidJS UI groups events by topic/key scope, detects ordering issues, visualizes stale periods and lets me inspect or export captured payloads.
 
-> After building Flamel, I wanted tooling that made real-time stream behavior visible. Wiretap is the tool I wished I had while debugging stale state, reconnects, sequence gaps and malformed events. It connects to a live stream, groups events by topic, detects ordering issues, visualizes stale periods and lets me inspect or export captured payloads. I built the UI in SolidJS because its fine-grained reactivity maps well to high-frequency stream inspection.
-
----
-
-# 18. Product success criteria
+## Product Success Criteria
 
 Wiretap is successful if a strong engineer thinks:
 
@@ -1277,36 +1341,37 @@ Wiretap is successful if a strong engineer thinks:
 
 Specific success signs:
 
+- the agent capture model is trustworthy
 - the event table is dense and useful
 - topic health makes stream behavior instantly legible
 - sequence gaps are obvious
 - stale periods are visible
 - payload inspection is fast
 - capture/export works
-- the tool integrates with Tape and Flamel
+- the tool integrates with Tape
 - the architecture is layered and defensible
 - the UI feels like a real developer tool, not a toy dashboard
 - SolidJS is used deliberately for fine-grained, high-frequency UI updates
 
----
-
-# 19. Final build strategy
+## Final Build Strategy
 
 Build in this order:
 
 ```text
-1. SolidJS web inspector
-2. Direct WebSocket connection
-3. Topic health + gap/stale detection
-4. Payload inspector
-5. Pause buffer + export
-6. Go local agent
-7. Timeline
-8. Electrobun desktop shell
+1. Agent protocol + SolidJS shell
+2. Agent upstream WebSocket capture
+3. Agent normalization + export
+4. Event table + payload inspector
+5. Topic health + sequence detection
+6. Stale detection + pause view
+7. Filters + issue strip + demo stream
+8. Load scenario
+9. Timeline
+10. Electrobun desktop shell
 ```
 
 The most important rule:
 
-> The SolidJS Web UI is the product. The Go agent is infrastructure. The Electrobun shell is polish.
+> The Go agent is the capture truth. The SolidJS UI is the presentation truth. The Electrobun shell is polish.
 
-Do not let agent or desktop packaging delay the core inspection experience.
+Do not let desktop packaging delay the core agent/UI inspection experience.

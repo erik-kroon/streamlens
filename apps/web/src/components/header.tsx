@@ -1,18 +1,10 @@
-import { Link } from "@tanstack/solid-router";
-import { For } from "solid-js";
-
 export default function Header() {
-  const links = [{ to: "/", label: "Home" }];
-
   return (
-    <div>
-      <div class="flex flex-row items-center justify-between px-2 py-1">
-        <nav class="flex gap-4 text-lg">
-          <For each={links}>{(link) => <Link to={link.to}>{link.label}</Link>}</For>
-        </nav>
-        <div class="flex items-center gap-2"></div>
+    <header class="border-b border-neutral-800 bg-neutral-950 px-4 py-2">
+      <div class="flex items-center justify-between gap-3">
+        <span class="font-mono text-xs uppercase text-neutral-500">Wiretap</span>
+        <span class="text-xs text-neutral-500">SolidJS inspector</span>
       </div>
-      <hr />
-    </div>
+    </header>
   );
 }
