@@ -128,6 +128,59 @@ func TestNormalizeCaptureReportsSchemaErrorsAndDefaultsDisplayFields(t *testing.
 	}
 }
 
+func TestNormalizeCaptureUsesConfigurableExtractionRules(t *testing.T) {
+	event := normalizeCaptureWithRules(upstreamFrame{
+		opcode:    0x1,
+		payload:   []byte(`{"meta":{"topic":"orders.created","kind":"domain_event","offset":91,"time":"2026-04-25T11:00:00Z"},"data":{"orderId":"ord_123","total":42}}`),
+		sizeBytes: 139,
+	}, extractionRules{
+		TopicPath:     "meta.topic",
+		TypePath:      "meta.kind",
+		SeqPath:       "meta.offset",
+		TimestampPath: "meta.time",
+		PayloadPath:   "data",
+		KeyPaths:      []string{"data.orderId"},
+	})
+
+	if event.Topic != "orders.created" || event.Type != "domain_event" {
+		t.Fatalf("expected custom topic/type extraction, got topic=%q type=%q", event.Topic, event.Type)
+	}
+	if event.Seq == nil || *event.Seq != 91 {
+		t.Fatalf("expected custom seq 91, got %#v", event.Seq)
+	}
+	if event.EffectiveKey != "ord_123" {
+		t.Fatalf("expected custom key ord_123, got %q", event.EffectiveKey)
+	}
+	payload, ok := event.Envelope.Payload.(map[string]interface{})
+	if !ok || payload["orderId"] != "ord_123" {
+		t.Fatalf("expected custom payload object, got %#v", event.Envelope.Payload)
+	}
+}
+
+func TestNormalizeCaptureAppliesDeclarativeSchemaPlugin(t *testing.T) {
+	event := normalizeCaptureWithRules(upstreamFrame{
+		opcode:    0x1,
+		payload:   []byte(`{"topic":"orders","type":"created","seq":1,"payload":{"status":"pending","total":"42"}}`),
+		sizeBytes: 80,
+	}, extractionRules{
+		SchemaPlugins: []schemaPlugin{{
+			ID:           "orders",
+			Name:         "Orders",
+			Enabled:      true,
+			Required:     []string{"payload.orderId"},
+			NumberFields: []string{"payload.total"},
+			EnumFields:   map[string][]string{"payload.status": []string{"paid", "failed"}},
+		}},
+	})
+
+	if countIssueCode(event.Issues, "schema_plugin") != 3 {
+		t.Fatalf("expected three plugin issues, got %#v", event.Issues)
+	}
+	if !containsStatus(event.Statuses, "schema_plugin") {
+		t.Fatalf("expected schema_plugin status, got %#v", event.Statuses)
+	}
+}
+
 func TestRecordEventAssignsRetainedIdentityAndRingBuffer(t *testing.T) {
 	agent := &agent{connectionID: "conn-test", startedAt: timeNowForTest()}
 	for i := 0; i < maxBufferedEvents+2; i++ {
@@ -378,6 +431,150 @@ func TestHandleCurrentSessionEventsReturnsPagedPersistedEvents(t *testing.T) {
 	}
 }
 
+func TestHandleImportJSONLReconstructsInspectableSession(t *testing.T) {
+	source := &agent{startedAt: timeNowForTest()}
+	for _, seq := range []int64{1, 3} {
+		event := normalizedEnvelopeForTest("market.AAPL", "AAPL", seq)
+		event.ReceivedAt = "2026-04-25T11:00:00Z"
+		source.recordEvent(event)
+	}
+
+	var body strings.Builder
+	encoder := json.NewEncoder(&body)
+	for _, event := range source.exportSnapshot() {
+		if err := encoder.Encode(event); err != nil {
+			t.Fatalf("failed to encode exported event: %v", err)
+		}
+	}
+
+	dir := t.TempDir()
+	agent := newStoredAgentForTest(t, dir)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/import/jsonl", strings.NewReader(body.String()))
+	request.Header.Set("Content-Type", "application/x-ndjson")
+	agent.handleImportJSONL(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var result importJSONLResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("expected import response payload: %v", err)
+	}
+	if result.Events != 2 || result.Issues != 1 || result.Session.TargetURL != "import:jsonl" {
+		t.Fatalf("expected imported session counters and target, got %#v", result)
+	}
+
+	events := agent.eventSnapshot()
+	if len(events) != 2 {
+		t.Fatalf("expected imported events, got %#v", events)
+	}
+	if events[0].ReceivedAt != "2026-04-25T11:00:00Z" {
+		t.Fatalf("expected imported receivedAt to be preserved, got %q", events[0].ReceivedAt)
+	}
+	if events[1].Envelope == nil || events[1].Envelope.Topic != "market.AAPL" {
+		t.Fatalf("expected imported event to be inspectable, got %#v", events[1])
+	}
+	if countIssueCode(events[1].Issues, "gap") != 1 {
+		t.Fatalf("expected import to recompute sequence gap, got %#v", events[1].Issues)
+	}
+
+	restarted := newStoredAgentForTest(t, dir)
+	if restarted.stats().Events != 2 || restarted.stats().Issues != 1 {
+		t.Fatalf("expected imported session to persist, got %#v", restarted.stats())
+	}
+}
+
+func TestSessionLibraryListsOpensDeletesAndExportsSavedSessions(t *testing.T) {
+	agent := newStoredAgentForTest(t, t.TempDir())
+	agent.connectionID = "conn-test"
+
+	first := normalizedEnvelopeForTest("market.AAPL", "AAPL", 1)
+	first.ReceivedAt = "2026-04-25T11:00:00Z"
+	agent.recordEventForStream("alpha", first)
+	firstSessionID := agent.recorder.currentSession().ID
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/clear", nil)
+	agent.handleClear(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("expected clear status 204, got %d", response.Code)
+	}
+
+	second := normalizedEnvelopeForTest("market.MSFT", "MSFT", 1)
+	second.ReceivedAt = "2026-04-25T11:00:01Z"
+	agent.recordEventForStream("beta", second)
+	secondSessionID := agent.recorder.currentSession().ID
+	if firstSessionID == secondSessionID {
+		t.Fatal("expected clear to create a new saved session")
+	}
+
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/sessions", nil)
+	agent.handleSessions(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected sessions status 200, got %d", response.Code)
+	}
+	var sessions []captureSession
+	if err := json.Unmarshal(response.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("expected valid sessions response: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected two saved sessions, got %#v", sessions)
+	}
+
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/sessions/"+firstSessionID+"/open", nil)
+	agent.handleSessionByID(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected open status 200, got %d", response.Code)
+	}
+	events := agent.eventSnapshot()
+	if len(events) != 1 || events[0].Topic != "market.AAPL" {
+		t.Fatalf("expected opened first session events, got %#v", events)
+	}
+	streams := agent.stats().Streams
+	if len(streams) != 1 || streams[0].ID != "alpha" || streams[0].Events != 1 {
+		t.Fatalf("expected opened first session to rebuild alpha stream runtime, got %#v", streams)
+	}
+
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/sessions/"+firstSessionID+"/export/jsonl", nil)
+	agent.handleSessionByID(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected export status 200, got %d", response.Code)
+	}
+	lines := strings.Split(strings.TrimSpace(response.Body.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected one exported line, got %q", response.Body.String())
+	}
+	var exported wiretapExportEvent
+	if err := json.Unmarshal([]byte(lines[0]), &exported); err != nil {
+		t.Fatalf("expected valid exported event: %v", err)
+	}
+	if exported.CaptureSeq != 1 || exported.Parsed == nil || exported.Parsed.Topic != "market.AAPL" {
+		t.Fatalf("expected exported first session event, got %#v", exported)
+	}
+
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, "/sessions/"+firstSessionID, nil)
+	agent.handleSessionByID(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("expected delete status 204, got %d", response.Code)
+	}
+	if agent.recorder.currentSession().ID != secondSessionID {
+		t.Fatalf("expected delete of current session to open remaining session, got %#v", agent.recorder.currentSession())
+	}
+	events = agent.eventSnapshot()
+	if len(events) != 1 || events[0].Topic != "market.MSFT" {
+		t.Fatalf("expected remaining session events after delete, got %#v", events)
+	}
+	streams = agent.stats().Streams
+	if len(streams) != 1 || streams[0].ID != "beta" || streams[0].Events != 1 {
+		t.Fatalf("expected delete to rebuild beta stream runtime, got %#v", streams)
+	}
+}
+
 func TestRecordEventDetectsSequenceGapDuplicateAndOutOfOrder(t *testing.T) {
 	agent := &agent{connectionID: "conn-test", startedAt: timeNowForTest()}
 	for _, seq := range []int64{1, 3, 3, 2} {
@@ -428,6 +625,36 @@ func TestRecordEventScopesSequenceByTopicAndEffectiveKey(t *testing.T) {
 		if len(event.Issues) != 0 {
 			t.Fatalf("expected independent topic/key sequence scopes, got event %#v", event)
 		}
+	}
+}
+
+func TestRecordEventScopesSequenceAndTopicsByStream(t *testing.T) {
+	agent := &agent{startedAt: timeNowForTest()}
+	agent.recordEventForStream("alpha", normalizedEnvelopeForTest("market.quote", "AAPL", 1))
+	agent.recordEventForStream("beta", normalizedEnvelopeForTest("market.quote", "AAPL", 1))
+	agent.recordEventForStream("alpha", normalizedEnvelopeForTest("market.quote", "AAPL", 3))
+
+	events := agent.eventSnapshot()
+	if len(events) != 3 {
+		t.Fatalf("expected three events, got %#v", events)
+	}
+	if events[0].StreamID != "alpha" || events[1].StreamID != "beta" || events[2].StreamID != "alpha" {
+		t.Fatalf("expected retained stream ids, got %#v", events)
+	}
+	if countIssueCode(events[1].Issues, "duplicate") != 0 || countIssueCode(events[1].Issues, "out_of_order") != 0 {
+		t.Fatalf("expected beta stream sequence to be independent, got %#v", events[1].Issues)
+	}
+	if countIssueCode(events[2].Issues, "gap") != 1 {
+		t.Fatalf("expected alpha stream gap, got %#v", events[2].Issues)
+	}
+
+	topics := agent.topicSnapshot()
+	if len(topics) != 2 {
+		t.Fatalf("expected per-stream topic aggregates, got %#v", topics)
+	}
+	streams := agent.stats().Streams
+	if len(streams) != 2 || streams[0].ID != "alpha" || streams[0].Events != 2 || streams[1].ID != "beta" || streams[1].Events != 1 {
+		t.Fatalf("expected per-stream stats, got %#v", streams)
 	}
 }
 
@@ -533,8 +760,10 @@ func newStoredAgentForTest(t *testing.T, dir string) *agent {
 		topics:         newTopicTrackerFromSnapshot(snapshot.Topics),
 		sequences:      newSequenceTracker(),
 		recorder:       newCaptureRecorder(store, snapshot.Session),
+		streams:        make(map[string]*streamRuntime),
 		subscribers:    make(map[*liveClient]struct{}),
 	}
 	agent.rebuildSequenceTrackerFromEvents()
+	agent.rebuildStreamRuntimeFromEvents()
 	return agent
 }

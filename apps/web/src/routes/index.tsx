@@ -7,14 +7,19 @@ import {
   Database,
   Download,
   Eraser,
+  FolderOpen,
   Link,
   Pause,
   Play,
   PlugZap,
   Radio,
   RefreshCw,
+  Save,
   Search,
   Server,
+  SlidersHorizontal,
+  Trash2,
+  Upload,
   Wifi,
   WifiOff,
 } from "lucide-solid";
@@ -33,7 +38,15 @@ import {
   summarizeTopics,
   type TopicSummary,
 } from "@/lib/capture-view-model";
-import type { AgentStatus, CaptureEvent, CaptureIssue, CaptureStats } from "@/lib/agent-protocol";
+import type {
+  AgentStatus,
+  CaptureEvent,
+  CaptureIssue,
+  CaptureSession,
+  CaptureStats,
+  ExtractionRules,
+  StreamStatus,
+} from "@/lib/agent-protocol";
 
 export const Route = createFileRoute("/")({
   component: App,
@@ -51,11 +64,24 @@ const demoScenarios = [
 
 type DemoScenario = (typeof demoScenarios)[number]["id"];
 
+const defaultExtractionRules: ExtractionRules = {
+  topicPath: "topic",
+  typePath: "type",
+  seqPath: "seq",
+  timestampPath: "ts",
+  payloadPath: "payload",
+  keyPaths: ["key", "symbol"],
+  schemaPlugins: [],
+  sandboxBoundary: "declarative-json-rules-only",
+};
+
 function App() {
   const agent = createAgentClient();
   const agentView = createAgentDerivedState(agent);
   const [demoScenario, setDemoScenario] = createSignal<DemoScenario>("normal");
   const [targetUrl, setTargetUrl] = createSignal(demoStreamUrl("normal"));
+  const [streamId, setStreamId] = createSignal("default");
+  const [streamFilter, setStreamFilter] = createSignal("all");
   const [headersText, setHeadersText] = createSignal("");
   const [bearerToken, setBearerToken] = createSignal("");
   const [apiKeyHeader, setApiKeyHeader] = createSignal("x-api-key");
@@ -69,9 +95,18 @@ function App() {
   const [liveFollowPaused, setLiveFollowPaused] = createSignal(false);
   const [pausedAfterSeq, setPausedAfterSeq] = createSignal(0);
   const [followVersion, setFollowVersion] = createSignal(0);
+  const [extractionRulesText, setExtractionRulesText] = createSignal(
+    JSON.stringify(defaultExtractionRules, null, 2),
+  );
 
   onMount(() => {
     const interval = window.setInterval(() => setNow(Date.now()), 1_000);
+    void agent
+      .readExtractionRules()
+      .then((rules) => setExtractionRulesText(JSON.stringify(rules, null, 2)))
+      .catch((caught) =>
+        setControlError(caught instanceof Error ? caught.message : "failed to load rules"),
+      );
     onCleanup(() => window.clearInterval(interval));
   });
 
@@ -82,13 +117,19 @@ function App() {
   });
   const filteredEvents = createMemo(() => {
     const query = filter().trim().toLowerCase();
-    const captureOrdered = [...events()].sort((a, b) => a.captureSeq - b.captureSeq);
+    const selectedStream = streamFilter();
+    const captureOrdered = [...events()]
+      .filter(
+        (event) => selectedStream === "all" || (event.streamId ?? "default") === selectedStream,
+      )
+      .sort((a, b) => a.captureSeq - b.captureSeq);
     if (query === "") {
       return captureOrdered;
     }
     return captureOrdered.filter((event) =>
       [
         event.captureSeq,
+        event.streamId,
         event.displayTopic,
         event.topic,
         event.displayType,
@@ -108,12 +149,18 @@ function App() {
     liveFollowPaused() ? events().filter((event) => event.captureSeq > pausedAfterSeq()).length : 0,
   );
   const topics = createMemo(() => {
+    const selectedStream = streamFilter();
     const agentTopics = agent.topics();
-    if (agentTopics.length > 0) {
-      return summarizeAgentTopics(agentTopics, now());
+    const visibleAgentTopics =
+      selectedStream === "all"
+        ? agentTopics
+        : agentTopics.filter((topic) => (topic.streamId ?? "default") === selectedStream);
+    if (visibleAgentTopics.length > 0) {
+      return summarizeAgentTopics(visibleAgentTopics, now());
     }
-    return summarizeTopics(events(), now());
+    return summarizeTopics(filteredEvents(), now());
   });
+  const streams = createMemo(() => agent.stats()?.streams ?? agent.status()?.streams ?? []);
   const endpoints = createMemo(() => {
     const status = agent.status();
     return status ? Object.entries(status.endpoints) : [];
@@ -131,6 +178,7 @@ function App() {
   const connect = () =>
     runControl(() =>
       agent.connectUpstream({
+        streamId: streamId(),
         url: targetUrl(),
         headers: parseHeaders(headersText()),
         bearerToken: bearerToken(),
@@ -191,6 +239,39 @@ function App() {
     });
 
   const exportCapture = () => runControl(agent.exportJSONL);
+  const importCapture = (file: File) =>
+    runControl(async () => {
+      await agent.importJSONL(file);
+      setSelectedSeq(undefined);
+      setPausedAfterSeq(0);
+      setLiveFollowPaused(false);
+      setFollowVersion((version) => version + 1);
+    });
+  const refreshSessions = () => runControl(agent.refreshSessions);
+  const openSavedSession = (sessionId: string) =>
+    runControl(async () => {
+      await agent.openSession(sessionId);
+      setSelectedSeq(undefined);
+      setPausedAfterSeq(0);
+      setLiveFollowPaused(false);
+      setFollowVersion((version) => version + 1);
+    });
+  const deleteSavedSession = (sessionId: string) =>
+    runControl(async () => {
+      await agent.deleteSession(sessionId);
+      setSelectedSeq(undefined);
+      setPausedAfterSeq(0);
+      setLiveFollowPaused(false);
+      setFollowVersion((version) => version + 1);
+    });
+  const exportSavedSession = (sessionId: string) =>
+    runControl(() => agent.exportSessionJSONL(sessionId));
+  const saveExtractionRules = () =>
+    runControl(async () => {
+      const parsed = JSON.parse(extractionRulesText()) as ExtractionRules;
+      const saved = await agent.saveExtractionRules(parsed);
+      setExtractionRulesText(JSON.stringify(saved, null, 2));
+    });
 
   return (
     <main class="relative h-full min-h-0 overflow-hidden bg-neutral-950 pb-9 text-neutral-100">
@@ -212,7 +293,13 @@ function App() {
               <IconTextButton
                 icon={Ban}
                 label="Disconnect"
-                onClick={() => runControl(agent.disconnectUpstream)}
+                onClick={() =>
+                  runControl(() =>
+                    agent.disconnectUpstream(
+                      streamFilter() === "all" ? streamId() : streamFilter(),
+                    ),
+                  )
+                }
               />
               <IconTextButton icon={Link} label="Reconnect UI" onClick={agent.reconnect} />
             </div>
@@ -225,10 +312,15 @@ function App() {
             controlError={controlError()}
             status={agent.status()}
             stats={agent.stats()}
+            currentSession={agent.currentSession()}
+            sessions={agent.sessions()}
             lastMessageAt={agent.lastMessageAt()}
             httpUrl={agent.httpUrl}
             liveUrl={agent.liveUrl}
             endpoints={endpoints()}
+            streams={streams()}
+            streamId={streamId()}
+            setStreamId={setStreamId}
             targetUrl={targetUrl()}
             setTargetUrl={setTargetUrl}
             demoScenario={demoScenario()}
@@ -246,7 +338,14 @@ function App() {
             autoReconnect={autoReconnect()}
             setAutoReconnect={setAutoReconnect}
             connect={connect}
-            reconnect={() => runControl(agent.reconnectUpstream)}
+            reconnect={() => runControl(() => agent.reconnectUpstream(streamId()))}
+            refreshSessions={refreshSessions}
+            openSession={openSavedSession}
+            deleteSession={deleteSavedSession}
+            exportSession={exportSavedSession}
+            extractionRulesText={extractionRulesText()}
+            setExtractionRulesText={setExtractionRulesText}
+            saveExtractionRules={saveExtractionRules}
           />
 
           <section class="grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_auto_1fr] border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:border-x lg:border-b-0">
@@ -256,6 +355,16 @@ function App() {
               detail={`${formatCount(filteredEvents().length)} shown / ${formatCount(events().length)} retained`}
             />
             <div class="flex min-w-0 flex-wrap items-center gap-2 border-b border-neutral-800 px-3 py-2">
+              <select
+                class="field h-9 w-[170px] min-w-0"
+                value={streamFilter()}
+                onInput={(event) => setStreamFilter(event.currentTarget.value)}
+              >
+                <option value="all">All streams</option>
+                <For each={streams()}>
+                  {(stream) => <option value={stream.id}>{stream.id}</option>}
+                </For>
+              </select>
               <div class="flex h-9 min-w-[220px] flex-1 items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900/70 px-3 text-neutral-500">
                 <Search size={15} />
                 <input
@@ -276,6 +385,7 @@ function App() {
                 primary={liveFollowPaused()}
               />
               <IconTextButton icon={Download} label="Export JSONL" onClick={exportCapture} />
+              <FileImportButton onImport={importCapture} />
               <IconTextButton icon={Eraser} label="Clear" onClick={clearCapture} />
             </div>
             <VirtualEventTable
@@ -326,10 +436,15 @@ type AgentPanelProps = {
   controlError: string | undefined;
   status: AgentStatus | undefined;
   stats: CaptureStats | undefined;
+  currentSession: CaptureSession | undefined;
+  sessions: CaptureSession[];
   lastMessageAt: Date | undefined;
   httpUrl: string;
   liveUrl: string;
   endpoints: [string, string][];
+  streams: StreamStatus[];
+  streamId: string;
+  setStreamId: (value: string) => void;
   targetUrl: string;
   setTargetUrl: (value: string) => void;
   demoScenario: DemoScenario;
@@ -348,6 +463,13 @@ type AgentPanelProps = {
   setAutoReconnect: (value: boolean) => void;
   connect: () => void;
   reconnect: () => void;
+  refreshSessions: () => void;
+  openSession: (sessionId: string) => void;
+  deleteSession: (sessionId: string) => void;
+  exportSession: (sessionId: string) => void;
+  extractionRulesText: string;
+  setExtractionRulesText: (value: string) => void;
+  saveExtractionRules: () => void;
 };
 
 function AgentPanel(props: AgentPanelProps) {
@@ -374,6 +496,23 @@ function AgentPanel(props: AgentPanelProps) {
 
         <Show when={props.controlError}>{(message) => <InlineIssue message={message()} />}</Show>
 
+        <SessionLibrary
+          sessions={props.sessions}
+          currentSession={props.currentSession}
+          onRefresh={props.refreshSessions}
+          onOpen={props.openSession}
+          onDelete={props.deleteSession}
+          onExport={props.exportSession}
+        />
+
+        <StreamList streams={props.streams} />
+
+        <ExtractionRuleEditor
+          value={props.extractionRulesText}
+          onInput={props.setExtractionRulesText}
+          onSave={props.saveExtractionRules}
+        />
+
         <div class="space-y-3 rounded-md border border-neutral-800 bg-neutral-900/50 p-3">
           <div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-neutral-500">
             <PlugZap size={13} />
@@ -391,6 +530,7 @@ function AgentPanel(props: AgentPanelProps) {
               </For>
             </select>
           </label>
+          <Field label="Stream ID" value={props.streamId} onInput={props.setStreamId} mono />
           <Field label="Target URI" value={props.targetUrl} onInput={props.setTargetUrl} mono />
           <div class="grid grid-cols-2 gap-2">
             <Field
@@ -458,6 +598,158 @@ function AgentPanel(props: AgentPanelProps) {
   );
 }
 
+function SessionLibrary(props: {
+  sessions: CaptureSession[];
+  currentSession: CaptureSession | undefined;
+  onRefresh: () => void;
+  onOpen: (sessionId: string) => void;
+  onDelete: (sessionId: string) => void;
+  onExport: (sessionId: string) => void;
+}) {
+  return (
+    <div class="space-y-2 rounded-md border border-neutral-800 bg-neutral-900/50 p-3">
+      <div class="flex min-w-0 items-center justify-between gap-2">
+        <div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-neutral-500">
+          <Database size={13} />
+          <span>Capture Library</span>
+        </div>
+        <button
+          type="button"
+          class="inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-neutral-700 bg-neutral-900 text-neutral-300 hover:border-neutral-500 hover:bg-neutral-800"
+          onClick={props.onRefresh}
+          title="Refresh sessions"
+        >
+          <RefreshCw size={13} />
+        </button>
+      </div>
+      <Show
+        when={props.sessions.length > 0}
+        fallback={
+          <div class="text-sm text-neutral-500">Saved captures appear after recording.</div>
+        }
+      >
+        <div class="grid max-h-[230px] gap-2 overflow-auto pr-1">
+          <For each={props.sessions}>
+            {(session) => {
+              const active = () => props.currentSession?.id === session.id;
+              return (
+                <div
+                  class={`grid gap-2 rounded-md border p-2 ${
+                    active()
+                      ? "border-cyan-300/40 bg-cyan-300/10"
+                      : "border-neutral-800 bg-neutral-950/45"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    class="grid min-w-0 gap-1 text-left"
+                    onClick={() => props.onOpen(session.id)}
+                  >
+                    <div class="flex min-w-0 items-center justify-between gap-2">
+                      <span class="truncate font-mono text-xs text-neutral-200">{session.id}</span>
+                      <span class={active() ? "badge-live" : "badge-muted"}>
+                        {active() ? "Open" : `${formatCount(session.eventCount)} events`}
+                      </span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2 text-xs text-neutral-500">
+                      <span class="truncate">{formatSessionDate(session.updatedAt)}</span>
+                      <span class="truncate text-right">
+                        {formatCount(session.issueCount)} flagged
+                      </span>
+                    </div>
+                  </button>
+                  <div class="grid grid-cols-3 gap-1">
+                    <MiniIconButton
+                      icon={FolderOpen}
+                      label="Open"
+                      onClick={() => props.onOpen(session.id)}
+                    />
+                    <MiniIconButton
+                      icon={Download}
+                      label="Export"
+                      onClick={() => props.onExport(session.id)}
+                    />
+                    <MiniIconButton
+                      icon={Trash2}
+                      label="Delete"
+                      onClick={() => props.onDelete(session.id)}
+                      danger
+                    />
+                  </div>
+                </div>
+              );
+            }}
+          </For>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+function StreamList(props: { streams: StreamStatus[] }) {
+  return (
+    <div class="space-y-2 rounded-md border border-neutral-800 bg-neutral-900/50 p-3">
+      <div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-neutral-500">
+        <Radio size={13} />
+        <span>Streams</span>
+      </div>
+      <Show
+        when={props.streams.length > 0}
+        fallback={<div class="text-sm text-neutral-500">No upstream streams configured.</div>}
+      >
+        <div class="grid max-h-[170px] gap-2 overflow-auto pr-1">
+          <For each={props.streams}>
+            {(stream) => (
+              <div class="grid gap-1 rounded-md border border-neutral-800 bg-neutral-950/45 p-2">
+                <div class="flex min-w-0 items-center justify-between gap-2">
+                  <span class="truncate font-mono text-xs text-neutral-200">{stream.id}</span>
+                  <StatusPill online={stream.state === "connected"} label={stream.state} compact />
+                </div>
+                <div class="truncate font-mono text-xs text-neutral-500">
+                  {stream.url ?? "No URL"}
+                </div>
+                <div class="grid grid-cols-3 gap-2 text-xs text-neutral-500">
+                  <span>{formatCount(stream.events)} events</span>
+                  <span>{formatCount(stream.issues)} flagged</span>
+                  <span class="truncate text-right">{stream.connectionId ?? "idle"}</span>
+                </div>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+function ExtractionRuleEditor(props: {
+  value: string;
+  onInput: (value: string) => void;
+  onSave: () => void;
+}) {
+  return (
+    <div class="space-y-2 rounded-md border border-neutral-800 bg-neutral-900/50 p-3">
+      <div class="flex min-w-0 items-center justify-between gap-2">
+        <div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-neutral-500">
+          <SlidersHorizontal size={13} />
+          <span>Extraction Rules</span>
+        </div>
+        <IconTextButton icon={Save} label="Apply" onClick={props.onSave} />
+      </div>
+      <textarea
+        class="field min-h-[180px] w-full min-w-0 resize-y font-mono text-xs leading-5"
+        spellcheck={false}
+        value={props.value}
+        onInput={(event) => props.onInput(event.currentTarget.value)}
+      />
+      <div class="grid grid-cols-2 gap-2 text-xs text-neutral-500">
+        <span class="truncate">Paths use dot notation.</span>
+        <span class="truncate text-right">Plugins run as declarative checks.</span>
+      </div>
+    </div>
+  );
+}
+
 function VirtualEventTable(props: {
   connected: boolean;
   events: CaptureEvent[];
@@ -517,6 +809,7 @@ function VirtualEventTable(props: {
     <div class="grid min-h-0 grid-rows-[34px_1fr]">
       <div class="event-grid border-b border-neutral-800 bg-neutral-900/70 text-xs font-medium uppercase text-neutral-500">
         <span>Seq</span>
+        <span>Stream</span>
         <span>Received</span>
         <span>Topic</span>
         <span>Status</span>
@@ -529,7 +822,7 @@ function VirtualEventTable(props: {
           class="event-table-scroll min-h-0 overflow-auto"
           onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
         >
-          <div class="relative min-w-[960px]" style={{ height: `${totalHeight()}px` }}>
+          <div class="relative min-w-[1080px]" style={{ height: `${totalHeight()}px` }}>
             <For each={visibleEvents()}>
               {(event, index) => {
                 const eventIndex = () => visibleRange().start + index();
@@ -543,6 +836,9 @@ function VirtualEventTable(props: {
                     onClick={() => props.onSelect(event.captureSeq)}
                   >
                     <span class="font-mono text-neutral-300">{event.captureSeq}</span>
+                    <span class="truncate font-mono text-neutral-500">
+                      {event.streamId ?? "default"}
+                    </span>
                     <span class="font-mono text-neutral-400">
                       {formatEventTime(event.receivedAt)}
                     </span>
@@ -904,6 +1200,50 @@ function IconTextButton(props: {
   );
 }
 
+function FileImportButton(props: { onImport: (file: File) => void }) {
+  return (
+    <label class="inline-flex h-9 min-w-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-neutral-700 bg-neutral-900 px-3 text-sm text-neutral-100 transition-colors hover:border-neutral-500 hover:bg-neutral-800 active:scale-[0.98]">
+      <Upload class="shrink-0" size={15} />
+      <span class="truncate">Import JSONL</span>
+      <input
+        class="sr-only"
+        type="file"
+        accept=".jsonl,application/x-ndjson,application/json"
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          event.currentTarget.value = "";
+          if (file) {
+            props.onImport(file);
+          }
+        }}
+      />
+    </label>
+  );
+}
+
+function MiniIconButton(props: {
+  icon: Component<{ size?: number; class?: string }>;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      class={`inline-flex h-8 min-w-0 items-center justify-center gap-1 rounded-md border px-2 text-xs transition-colors active:scale-[0.98] ${
+        props.danger
+          ? "border-amber-500/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/15"
+          : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:border-neutral-500 hover:bg-neutral-800"
+      }`}
+      onClick={props.onClick}
+      title={props.label}
+    >
+      <Dynamic component={props.icon} class="shrink-0" size={13} />
+      <span class="truncate">{props.label}</span>
+    </button>
+  );
+}
+
 function Metric(props: { label: string; value: string }) {
   return (
     <div class="grid min-w-0 gap-1">
@@ -1031,6 +1371,7 @@ function formatInspectorTab(event: CaptureEvent, tab: InspectorTab): string {
   }
   return stringifyInspectorValue({
     id: event.id,
+    streamId: event.streamId,
     connectionId: event.connectionId,
     captureSeq: event.captureSeq,
     receivedAt: event.receivedAt,
@@ -1064,6 +1405,19 @@ function formatEventTime(value: string): string {
 
 function formatTime(value: Date | undefined): string {
   return value?.toLocaleTimeString() ?? "Never";
+}
+
+function formatSessionDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function formatFreshness(value: number): string {

@@ -66,8 +66,8 @@ textarea {
 
 .event-grid {
   display: grid;
-  grid-template-columns: 72px 136px minmax(170px, 0.9fr) 96px 124px minmax(260px, 1.4fr);
-  min-width: 960px;
+  grid-template-columns: 72px 112px 136px minmax(170px, 0.9fr) 96px 124px minmax(260px, 1.4fr);
+  min-width: 1080px;
   min-height: 34px;
   align-items: center;
   column-gap: 10px;

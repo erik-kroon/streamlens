@@ -29,6 +29,7 @@ type rateSample struct {
 
 type topicAggregate struct {
 	ID               string
+	StreamID         string
 	Topic            string
 	Key              string
 	Scope            topicScope
@@ -55,6 +56,7 @@ type topicAggregate struct {
 
 type topicState struct {
 	ID               string     `json:"id"`
+	StreamID         string     `json:"streamId,omitempty"`
 	Topic            string     `json:"topic"`
 	Key              string     `json:"key,omitempty"`
 	Name             string     `json:"name"`
@@ -106,8 +108,14 @@ func newTopicTrackerFromSnapshot(topics []topicState) *topicTracker {
 				staleSince = &parsed
 			}
 		}
-		tracker.topics[state.ID] = &topicAggregate{
-			ID:               state.ID,
+		streamID := normalizedStreamID(state.StreamID)
+		id := state.ID
+		if state.StreamID == "" {
+			id = topicID(streamID, state.Topic, state.Key)
+		}
+		tracker.topics[id] = &topicAggregate{
+			ID:               id,
+			StreamID:         streamID,
 			Topic:            state.Topic,
 			Key:              state.Key,
 			Scope:            state.Scope,
@@ -164,7 +172,8 @@ func (tracker *topicTracker) record(event captureEvent) (topicState, bool) {
 		scope = topicScopeTopic
 	}
 
-	id := topicID(topicName, key)
+	streamID := normalizedStreamID(event.StreamID)
+	id := topicID(streamID, topicName, key)
 	if tracker.topics == nil {
 		tracker.topics = make(map[string]*topicAggregate)
 	}
@@ -172,6 +181,7 @@ func (tracker *topicTracker) record(event captureEvent) (topicState, bool) {
 	if topic == nil {
 		topic = &topicAggregate{
 			ID:               id,
+			StreamID:         streamID,
 			Topic:            topicName,
 			Key:              key,
 			Scope:            scope,
@@ -267,6 +277,7 @@ func refreshTopicRate(topic *topicAggregate, now time.Time) {
 func (topic *topicAggregate) toState() topicState {
 	state := topicState{
 		ID:               topic.ID,
+		StreamID:         topic.StreamID,
 		Topic:            topic.Topic,
 		Key:              topic.Key,
 		Name:             topicName(topic.Topic, topic.Key),
@@ -327,11 +338,12 @@ func topicRuleMatches(pattern string, topic string) bool {
 	return topic == pattern
 }
 
-func topicID(topic string, key string) string {
+func topicID(streamID string, topic string, key string) string {
+	prefix := normalizedStreamID(streamID) + "\x00"
 	if key == "" {
-		return topic
+		return prefix + topic
 	}
-	return topic + "\x00" + key
+	return prefix + topic + "\x00" + key
 }
 
 func topicName(topic string, key string) string {

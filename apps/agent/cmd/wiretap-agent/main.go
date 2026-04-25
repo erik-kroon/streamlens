@@ -39,6 +39,7 @@ const (
 	rateWindow           = time.Second
 	writeDeadlineTimeout = 5 * time.Second
 	statsBroadcastEvery  = 250 * time.Millisecond
+	defaultStreamID      = "default"
 )
 
 type agent struct {
@@ -53,6 +54,7 @@ type agent struct {
 	activeConfig    *connectRequest
 	connectedAt     *time.Time
 	connectionCount int64
+	streams         map[string]*streamRuntime
 	eventCount      int64
 	issueCount      int64
 	nextCaptureSeq  int64
@@ -61,6 +63,7 @@ type agent struct {
 	events          []captureEvent
 	topics          *topicTracker
 	sequences       *sequenceTracker
+	extractionRules extractionRules
 	recorder        *captureRecorder
 	session         *upstreamSession
 	subscribers     map[*liveClient]struct{}
@@ -78,6 +81,7 @@ const (
 )
 
 type connectRequest struct {
+	StreamID      string            `json:"streamId,omitempty"`
 	URL           string            `json:"url"`
 	Headers       map[string]string `json:"headers"`
 	BearerToken   string            `json:"bearerToken"`
@@ -88,10 +92,26 @@ type connectRequest struct {
 }
 
 type upstreamSession struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
-	config connectRequest
+	ctx      context.Context
+	cancel   context.CancelFunc
+	done     chan struct{}
+	config   connectRequest
+	streamID string
+}
+
+type streamRuntime struct {
+	ID              string           `json:"id"`
+	URL             string           `json:"url,omitempty"`
+	State           agentState       `json:"state"`
+	LastError       string           `json:"lastError,omitempty"`
+	ConnectedAt     *time.Time       `json:"-"`
+	ConnectedAtText string           `json:"connectedAt,omitempty"`
+	ConnectionID    string           `json:"connectionId,omitempty"`
+	Connections     int64            `json:"connections"`
+	Events          int64            `json:"events"`
+	Issues          int64            `json:"issues"`
+	Config          *connectRequest  `json:"-"`
+	Session         *upstreamSession `json:"-"`
 }
 
 type agentStatus struct {
@@ -103,21 +123,36 @@ type agentStatus struct {
 	LiveClients int64             `json:"liveClients"`
 	TargetURL   string            `json:"targetUrl,omitempty"`
 	LastError   string            `json:"lastError,omitempty"`
+	Streams     []streamStatus    `json:"streams"`
 	Endpoints   map[string]string `json:"endpoints"`
 }
 
 type captureStats struct {
-	Connections    int64      `json:"connections"`
-	Events         int64      `json:"events"`
-	RetainedEvents int64      `json:"retainedEvents"`
-	DroppedEvents  int64      `json:"droppedEvents"`
-	BufferCapacity int64      `json:"bufferCapacity"`
-	Issues         int64      `json:"issues"`
-	LiveClients    int64      `json:"liveClients"`
-	UptimeMs       int64      `json:"uptimeMs"`
-	State          agentState `json:"state"`
-	TargetURL      string     `json:"targetUrl,omitempty"`
-	ConnectedAt    string     `json:"connectedAt,omitempty"`
+	Connections    int64          `json:"connections"`
+	Events         int64          `json:"events"`
+	RetainedEvents int64          `json:"retainedEvents"`
+	DroppedEvents  int64          `json:"droppedEvents"`
+	BufferCapacity int64          `json:"bufferCapacity"`
+	Issues         int64          `json:"issues"`
+	LiveClients    int64          `json:"liveClients"`
+	UptimeMs       int64          `json:"uptimeMs"`
+	State          agentState     `json:"state"`
+	TargetURL      string         `json:"targetUrl,omitempty"`
+	ConnectedAt    string         `json:"connectedAt,omitempty"`
+	ActiveStreams  int64          `json:"activeStreams"`
+	Streams        []streamStatus `json:"streams"`
+}
+
+type streamStatus struct {
+	ID           string     `json:"id"`
+	URL          string     `json:"url,omitempty"`
+	State        agentState `json:"state"`
+	LastError    string     `json:"lastError,omitempty"`
+	ConnectedAt  string     `json:"connectedAt,omitempty"`
+	ConnectionID string     `json:"connectionId,omitempty"`
+	Connections  int64      `json:"connections"`
+	Events       int64      `json:"events"`
+	Issues       int64      `json:"issues"`
 }
 
 type agentMessage struct {
@@ -131,6 +166,7 @@ type liveClient struct {
 
 type captureEvent struct {
 	ID                string           `json:"id,omitempty"`
+	StreamID          string           `json:"streamId,omitempty"`
 	ConnectionID      string           `json:"connectionId,omitempty"`
 	CaptureSeq        int64            `json:"captureSeq"`
 	ReceivedAt        string           `json:"receivedAt"`
@@ -159,6 +195,7 @@ type captureEvent struct {
 
 type wiretapExportEvent struct {
 	CaptureSeq        int64            `json:"captureSeq"`
+	StreamID          string           `json:"streamId,omitempty"`
 	ConnectionID      string           `json:"connectionId"`
 	ReceivedAt        int64            `json:"receivedAt"`
 	Direction         string           `json:"direction"`
@@ -223,20 +260,23 @@ func main() {
 		os.Exit(1)
 	}
 	agent := &agent{
-		id:             "wiretap-local-agent",
-		version:        "0.2.0",
-		startedAt:      time.Now().UTC(),
-		state:          stateReady,
-		eventCount:     snapshot.Session.EventCount,
-		issueCount:     snapshot.Session.IssueCount,
-		nextCaptureSeq: latestCaptureSeq(snapshot.Events),
-		events:         snapshot.Events,
-		topics:         newTopicTrackerFromSnapshot(snapshot.Topics),
-		sequences:      newSequenceTracker(),
-		recorder:       newCaptureRecorder(store, snapshot.Session),
-		subscribers:    make(map[*liveClient]struct{}),
+		id:              "wiretap-local-agent",
+		version:         "0.2.0",
+		startedAt:       time.Now().UTC(),
+		state:           stateReady,
+		eventCount:      snapshot.Session.EventCount,
+		issueCount:      snapshot.Session.IssueCount,
+		nextCaptureSeq:  latestCaptureSeq(snapshot.Events),
+		events:          snapshot.Events,
+		topics:          newTopicTrackerFromSnapshot(snapshot.Topics),
+		sequences:       newSequenceTracker(),
+		extractionRules: defaultExtractionRules(),
+		recorder:        newCaptureRecorder(store, snapshot.Session),
+		streams:         make(map[string]*streamRuntime),
+		subscribers:     make(map[*liveClient]struct{}),
 	}
 	agent.rebuildSequenceTrackerFromEvents()
+	agent.rebuildStreamRuntimeFromEvents()
 	go agent.runStaleEvaluator(context.Background())
 	if strings.TrimSpace(*demoAddress) != "" {
 		go runDemoStreamServer(*demoAddress, logger)
@@ -247,7 +287,11 @@ func main() {
 	mux.HandleFunc("/stats", agent.withCORS(agent.handleStats))
 	mux.HandleFunc("/events", agent.withCORS(agent.handleEvents))
 	mux.HandleFunc("/topics", agent.withCORS(agent.handleTopics))
+	mux.HandleFunc("/extraction-rules", agent.withCORS(agent.handleExtractionRules))
 	mux.HandleFunc("/export/jsonl", agent.withCORS(agent.handleExportJSONL))
+	mux.HandleFunc("/import/jsonl", agent.withCORS(agent.handleImportJSONL))
+	mux.HandleFunc("/sessions", agent.withCORS(agent.handleSessions))
+	mux.HandleFunc("/sessions/", agent.withCORS(agent.handleSessionByID))
 	mux.HandleFunc("/sessions/current", agent.withCORS(agent.handleCurrentSession))
 	mux.HandleFunc("/sessions/current/events", agent.withCORS(agent.handleCurrentSessionEvents))
 	mux.HandleFunc("/connect", agent.withCORS(agent.handleConnect))
@@ -305,6 +349,28 @@ func (a *agent) handleTopics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.topicSnapshot())
 }
 
+func (a *agent) handleExtractionRules(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, a.currentExtractionRules())
+	case http.MethodPut:
+		var rules extractionRules
+		if err := json.NewDecoder(r.Body).Decode(&rules); err != nil {
+			writeHTTPError(w, http.StatusBadRequest, "invalid extraction rules payload")
+			return
+		}
+		rules = normalizeExtractionRules(rules)
+		if err := rules.validate(); err != nil {
+			writeHTTPError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.setExtractionRules(rules)
+		writeJSON(w, http.StatusOK, rules)
+	default:
+		writeMethodNotAllowed(w, http.MethodGet, http.MethodPut)
+	}
+}
+
 func (a *agent) handleExportJSONL(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)
@@ -352,7 +418,7 @@ func (a *agent) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.stopConnection(stateDisconnected, "")
+	a.stopConnection(streamIDFromRequest(r), stateDisconnected, "")
 	writeJSON(w, http.StatusOK, a.status())
 }
 
@@ -362,8 +428,16 @@ func (a *agent) handleReconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	streamID := streamIDFromRequest(r)
 	a.mu.RLock()
 	config := a.activeConfig
+	if streamID != "" {
+		if stream := a.streams[streamID]; stream != nil {
+			config = stream.Config
+		} else {
+			config = nil
+		}
+	}
 	a.mu.RUnlock()
 	if config == nil {
 		writeHTTPError(w, http.StatusConflict, "no upstream connection has been configured")
@@ -473,7 +547,7 @@ func (a *agent) handleLive(w http.ResponseWriter, r *http.Request) {
 func (a *agent) withCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition")
 		if r.Method == http.MethodOptions {
@@ -498,16 +572,32 @@ func (a *agent) startConnection(config connectRequest) {
 }
 
 func (a *agent) replaceSession(config connectRequest) *upstreamSession {
+	streamID := normalizedStreamID(config.StreamID)
+	config.StreamID = streamID
 	ctx, cancel := context.WithCancel(context.Background())
 	session := &upstreamSession{
-		ctx:    ctx,
-		cancel: cancel,
-		done:   make(chan struct{}),
-		config: config,
+		ctx:      ctx,
+		cancel:   cancel,
+		done:     make(chan struct{}),
+		config:   config,
+		streamID: streamID,
 	}
 
 	a.mu.Lock()
-	previous := a.session
+	a.ensureStreamsLocked()
+	stream := a.streams[streamID]
+	if stream == nil {
+		stream = &streamRuntime{ID: streamID}
+		a.streams[streamID] = stream
+	}
+	previous := stream.Session
+	stream.Session = session
+	stream.Config = &session.config
+	stream.URL = config.URL
+	stream.State = stateConnecting
+	stream.LastError = ""
+	stream.ConnectedAt = nil
+	stream.ConnectedAtText = ""
 	a.session = session
 	a.activeConfig = &session.config
 	a.state = stateConnecting
@@ -525,8 +615,13 @@ func (a *agent) replaceSession(config connectRequest) *upstreamSession {
 }
 
 func (a *agent) runUpstream(config connectRequest) {
+	streamID := normalizedStreamID(config.StreamID)
 	a.mu.RLock()
-	session := a.session
+	stream := a.streams[streamID]
+	var session *upstreamSession
+	if stream != nil {
+		session = stream.Session
+	}
 	a.mu.RUnlock()
 	if session == nil {
 		return
@@ -538,24 +633,24 @@ func (a *agent) runUpstream(config connectRequest) {
 	firstAttempt := true
 	for {
 		if !firstAttempt {
-			a.setConnectionState(stateReconnecting, "")
+			a.setConnectionState(streamID, stateReconnecting, "")
 			select {
 			case <-ctx.Done():
-				a.setConnectionState(stateDisconnected, "")
+				a.setConnectionState(streamID, stateDisconnected, "")
 				return
 			case <-time.After(reconnectDelay):
 			}
 		}
 		firstAttempt = false
 
-		a.setConnectionState(stateConnecting, "")
+		a.setConnectionState(streamID, stateConnecting, "")
 		conn, err := dialUpstream(ctx, config)
 		if err != nil {
 			if ctx.Err() != nil {
-				a.setConnectionState(stateDisconnected, "")
+				a.setConnectionState(streamID, stateDisconnected, "")
 				return
 			}
-			a.setConnectionState(stateError, err.Error())
+			a.setConnectionState(streamID, stateError, err.Error())
 			if !config.AutoReconnect {
 				return
 			}
@@ -565,28 +660,37 @@ func (a *agent) runUpstream(config connectRequest) {
 		connectedAt := time.Now().UTC()
 		a.mu.Lock()
 		a.connectionCount++
-		a.connectionID = fmt.Sprintf("conn-%d", a.connectionCount)
+		connectionID := fmt.Sprintf("%s-conn-%d", streamID, a.connectionCount)
+		a.connectionID = connectionID
 		a.connectedAt = &connectedAt
 		a.state = stateConnected
 		a.lastError = ""
+		if stream := a.streams[streamID]; stream != nil {
+			stream.Connections++
+			stream.ConnectionID = connectionID
+			stream.ConnectedAt = &connectedAt
+			stream.ConnectedAtText = connectedAt.Format(time.RFC3339Nano)
+			stream.State = stateConnected
+			stream.LastError = ""
+		}
 		a.mu.Unlock()
 		a.broadcast(agentMessage{Type: "agent.ready", Payload: a.status()})
 		a.broadcast(agentMessage{Type: "capture.stats", Payload: a.stats()})
 
-		err = a.captureFrames(ctx, conn)
+		err = a.captureFrames(ctx, streamID, conn)
 		_ = conn.Close()
 		if ctx.Err() != nil {
-			a.setConnectionState(stateDisconnected, "")
+			a.setConnectionState(streamID, stateDisconnected, "")
 			return
 		}
-		a.setConnectionState(stateError, err.Error())
+		a.setConnectionState(streamID, stateError, err.Error())
 		if !config.AutoReconnect {
 			return
 		}
 	}
 }
 
-func (a *agent) captureFrames(ctx context.Context, conn *upstreamConn) error {
+func (a *agent) captureFrames(ctx context.Context, streamID string, conn *upstreamConn) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -601,8 +705,8 @@ func (a *agent) captureFrames(ctx context.Context, conn *upstreamConn) error {
 
 		switch frame.opcode {
 		case 0x1, 0x2:
-			event := normalizeCapture(frame)
-			a.recordEvent(event)
+			event := normalizeCaptureWithRules(frame, a.currentExtractionRules())
+			a.recordEventForStream(streamID, event)
 		case 0x8:
 			return errors.New("upstream closed websocket")
 		case 0x9:
@@ -614,6 +718,10 @@ func (a *agent) captureFrames(ctx context.Context, conn *upstreamConn) error {
 }
 
 func (a *agent) recordEvent(event captureEvent) {
+	a.recordEventForStream(defaultStreamID, event)
+}
+
+func (a *agent) recordEventForStream(streamID string, event captureEvent) {
 	var topic topicState
 	var hasTopic bool
 	var shouldBroadcastStats bool
@@ -625,16 +733,26 @@ func (a *agent) recordEvent(event captureEvent) {
 
 	a.mu.Lock()
 	a.ensureCaptureModulesLocked()
+	a.ensureStreamsLocked()
+	streamID = normalizedStreamID(streamID)
+	stream := a.streams[streamID]
+	if stream == nil {
+		stream = &streamRuntime{ID: streamID, State: stateDisconnected, ConnectionID: a.connectionID}
+		a.streams[streamID] = stream
+	}
 	a.nextCaptureSeq++
 	event.CaptureSeq = a.nextCaptureSeq
-	event.ConnectionID = a.connectionID
+	event.StreamID = streamID
+	event.ConnectionID = stream.ConnectionID
 	if event.ConnectionID == "" {
-		event.ConnectionID = "conn-0"
+		event.ConnectionID = streamID + "-conn-0"
 	}
 	event.ID = fmt.Sprintf("%s:%d", event.ConnectionID, event.CaptureSeq)
 	a.sequences.detect(&event)
 	a.eventCount++
 	a.issueCount += int64(len(event.Issues))
+	stream.Events++
+	stream.Issues += int64(len(event.Issues))
 	a.events = append(a.events, event)
 	if len(a.events) > maxBufferedEvents {
 		copy(a.events, a.events[len(a.events)-maxBufferedEvents:])
@@ -715,13 +833,21 @@ func (a *agent) evaluateStaleTopics(now time.Time) []topicState {
 	return result.changed
 }
 
-func (a *agent) stopConnection(state agentState, lastError string) {
+func (a *agent) stopConnection(streamID string, state agentState, lastError string) {
+	streamID = normalizedStreamID(streamID)
 	a.mu.Lock()
-	session := a.session
-	a.session = nil
-	a.state = state
-	a.lastError = lastError
-	a.connectedAt = nil
+	a.ensureStreamsLocked()
+	stream := a.streams[streamID]
+	var session *upstreamSession
+	if stream != nil {
+		session = stream.Session
+		stream.Session = nil
+		stream.State = state
+		stream.LastError = lastError
+		stream.ConnectedAt = nil
+		stream.ConnectedAtText = ""
+	}
+	a.refreshAggregateConnectionStateLocked()
 	a.mu.Unlock()
 
 	if session != nil {
@@ -733,13 +859,19 @@ func (a *agent) stopConnection(state agentState, lastError string) {
 	a.broadcast(agentMessage{Type: "capture.stats", Payload: a.stats()})
 }
 
-func (a *agent) setConnectionState(state agentState, lastError string) {
+func (a *agent) setConnectionState(streamID string, state agentState, lastError string) {
+	streamID = normalizedStreamID(streamID)
 	a.mu.Lock()
-	a.state = state
-	a.lastError = lastError
-	if state != stateConnected {
-		a.connectedAt = nil
+	a.ensureStreamsLocked()
+	if stream := a.streams[streamID]; stream != nil {
+		stream.State = state
+		stream.LastError = lastError
+		if state != stateConnected {
+			stream.ConnectedAt = nil
+			stream.ConnectedAtText = ""
+		}
 	}
+	a.refreshAggregateConnectionStateLocked()
 	a.mu.Unlock()
 
 	a.broadcast(agentMessage{Type: "agent.ready", Payload: a.status()})
@@ -751,6 +883,7 @@ func (a *agent) status() agentStatus {
 	state := a.state
 	lastError := a.lastError
 	config := a.activeConfig
+	streams := a.streamStatusesLocked()
 	a.mu.RUnlock()
 
 	targetURL := ""
@@ -767,12 +900,15 @@ func (a *agent) status() agentStatus {
 		LiveClients: a.liveClients.Load(),
 		TargetURL:   targetURL,
 		LastError:   lastError,
+		Streams:     streams,
 		Endpoints: map[string]string{
 			"health":        "http://localhost:8790/health",
 			"stats":         "http://localhost:8790/stats",
 			"events":        "http://localhost:8790/events",
 			"topics":        "http://localhost:8790/topics",
+			"extraction":    "http://localhost:8790/extraction-rules",
 			"exportJsonl":   "http://localhost:8790/export/jsonl",
+			"importJsonl":   "http://localhost:8790/import/jsonl",
 			"session":       "http://localhost:8790/sessions/current",
 			"sessionEvents": "http://localhost:8790/sessions/current/events",
 			"connect":       "http://localhost:8790/connect",
@@ -786,6 +922,13 @@ func (a *agent) status() agentStatus {
 
 func (a *agent) stats() captureStats {
 	a.mu.RLock()
+	streams := a.streamStatusesLocked()
+	activeStreams := int64(0)
+	for _, stream := range streams {
+		if stream.State == stateConnecting || stream.State == stateConnected || stream.State == stateReconnecting {
+			activeStreams++
+		}
+	}
 	retainedEvents := int64(len(a.events))
 	droppedEvents := a.eventCount - retainedEvents
 	if droppedEvents < 0 {
@@ -801,6 +944,8 @@ func (a *agent) stats() captureStats {
 		LiveClients:    a.liveClients.Load(),
 		UptimeMs:       a.uptimeMs(),
 		State:          a.state,
+		ActiveStreams:  activeStreams,
+		Streams:        streams,
 	}
 	if a.activeConfig != nil {
 		stats.TargetURL = a.activeConfig.URL
@@ -840,9 +985,22 @@ func (a *agent) topicSnapshot() []topicState {
 	return a.topics.snapshot(time.Now().UTC())
 }
 
+func (a *agent) currentExtractionRules() extractionRules {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return normalizeExtractionRules(a.extractionRules)
+}
+
+func (a *agent) setExtractionRules(rules extractionRules) {
+	a.mu.Lock()
+	a.extractionRules = normalizeExtractionRules(rules)
+	a.mu.Unlock()
+}
+
 func exportEvent(event captureEvent) wiretapExportEvent {
 	return wiretapExportEvent{
 		CaptureSeq:        event.CaptureSeq,
+		StreamID:          event.StreamID,
 		ConnectionID:      event.ConnectionID,
 		ReceivedAt:        receivedAtMillis(event.ReceivedAt),
 		Direction:         event.Direction,
@@ -882,12 +1040,17 @@ func (a *agent) ensureCaptureModulesLocked() {
 	if a.sequences == nil {
 		a.sequences = newSequenceTracker()
 	}
+	a.ensureStreamsLocked()
 }
 
 func (a *agent) rebuildSequenceTrackerFromEvents() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	a.rebuildSequenceTrackerFromEventsLocked()
+}
+
+func (a *agent) rebuildSequenceTrackerFromEventsLocked() {
 	a.ensureCaptureModulesLocked()
 	a.sequences = newSequenceTracker()
 	for _, event := range a.events {
@@ -952,6 +1115,7 @@ func (a *agent) broadcast(message agentMessage) {
 }
 
 func (request *connectRequest) validate() error {
+	request.StreamID = normalizedStreamID(request.StreamID)
 	request.URL = strings.TrimSpace(request.URL)
 	if request.URL == "" {
 		return errors.New("url is required")
@@ -1155,6 +1319,11 @@ func readServerFrame(conn *upstreamConn) (upstreamFrame, error) {
 }
 
 func normalizeCapture(frame upstreamFrame) captureEvent {
+	return normalizeCaptureWithRules(frame, defaultExtractionRules())
+}
+
+func normalizeCaptureWithRules(frame upstreamFrame, rules extractionRules) captureEvent {
+	rules = normalizeExtractionRules(rules)
 	event := captureEvent{
 		ReceivedAt:        time.Now().UTC().Format(time.RFC3339Nano),
 		Direction:         "inbound",
@@ -1209,42 +1378,51 @@ func normalizeCapture(frame upstreamFrame) captureEvent {
 		return event
 	}
 
-	envelope := wiretapEnvelope{Payload: parsed["payload"]}
-	if topic, ok := requiredStringField(parsed, "topic", &event); ok {
+	envelope := wiretapEnvelope{}
+	if payload, ok := valueAtPath(parsed, rules.PayloadPath); ok {
+		envelope.Payload = payload
+	}
+	if topic, ok := requiredStringPath(parsed, rules.TopicPath, "topic", &event); ok {
 		envelope.Topic = topic
 		event.Topic = topic
 		event.DisplayTopic = topic
 	}
-	if eventType, ok := requiredStringField(parsed, "type", &event); ok {
+	if eventType, ok := requiredStringPath(parsed, rules.TypePath, "type", &event); ok {
 		envelope.Type = eventType
 		event.Type = eventType
 		event.DisplayType = eventType
 	}
-	if key, ok := optionalStringField(parsed, "key", &event); ok {
-		envelope.Key = key
-		event.Key = key
-		event.EffectiveKey = key
-	}
-	if symbol, ok := optionalStringField(parsed, "symbol", &event); ok {
-		envelope.Symbol = symbol
-		if event.EffectiveKey == "" {
-			event.EffectiveKey = symbol
-			event.Key = symbol
+	for index, path := range rules.KeyPaths {
+		if key, ok := optionalStringPath(parsed, path, &event); ok {
+			if index == 0 {
+				envelope.Key = key
+			}
+			if path == "symbol" {
+				envelope.Symbol = key
+			}
+			if event.EffectiveKey == "" {
+				event.EffectiveKey = key
+				event.Key = key
+			}
 		}
 	}
-	if ts, ok := optionalTimestampField(parsed, "ts", &event); ok {
+	if ts, ok := optionalTimestampPath(parsed, rules.TimestampPath, &event); ok {
 		envelope.TS = ts
 		event.SourceTS = ts
 	}
-	if seq, ok := optionalInt64Field(parsed, "seq", &event); ok {
+	if seq, ok := optionalInt64Path(parsed, rules.SeqPath, &event); ok {
 		envelope.Seq = &seq
 		event.Seq = &seq
 	}
 
 	event.Envelope = &envelope
+	applySchemaPlugins(parsed, rules.SchemaPlugins, &event)
 
 	if hasIssueCode(event.Issues, "schema_error") {
 		event.addStatus("schema_error")
+	}
+	if hasIssueCode(event.Issues, "schema_plugin") {
+		event.addStatus("schema_plugin")
 	}
 	finalizeStatuses(&event)
 	return event
@@ -1268,75 +1446,6 @@ func decodeEnvelopeObject(payload []byte) (map[string]interface{}, error) {
 		return nil, errors.New("wiretap envelope must be a JSON object")
 	}
 	return values, nil
-}
-
-func requiredStringField(values map[string]interface{}, key string, event *captureEvent) (string, bool) {
-	value, exists := values[key]
-	if !exists {
-		event.addIssue("schema_error", "error", fmt.Sprintf("Envelope is missing required string field: %s.", key))
-		return "", false
-	}
-	text, ok := value.(string)
-	if !ok || text == "" {
-		event.addIssue("schema_error", "error", fmt.Sprintf("Envelope field %s must be a non-empty string.", key))
-		return "", false
-	}
-	return text, true
-}
-
-func optionalStringField(values map[string]interface{}, key string, event *captureEvent) (string, bool) {
-	value, exists := values[key]
-	if !exists || value == nil {
-		return "", false
-	}
-	text, ok := value.(string)
-	if !ok {
-		event.addIssue("schema_error", "error", fmt.Sprintf("Envelope field %s must be a string when present.", key))
-		return "", false
-	}
-	if text == "" {
-		return "", false
-	}
-	return text, true
-}
-
-func optionalTimestampField(values map[string]interface{}, key string, event *captureEvent) (interface{}, bool) {
-	value, exists := values[key]
-	if !exists || value == nil {
-		return nil, false
-	}
-
-	switch typed := value.(type) {
-	case string:
-		return typed, true
-	case json.Number:
-		if _, err := typed.Float64(); err == nil {
-			return typed, true
-		}
-	}
-
-	event.addIssue("schema_error", "error", "Envelope field ts must be a number or string when present.")
-	return nil, false
-}
-
-func optionalInt64Field(values map[string]interface{}, key string, event *captureEvent) (int64, bool) {
-	value, exists := values[key]
-	if !exists || value == nil {
-		return 0, false
-	}
-
-	number, ok := value.(json.Number)
-	if !ok {
-		event.addIssue("schema_error", "error", fmt.Sprintf("Envelope field %s must be an integer number when present.", key))
-		return 0, false
-	}
-
-	parsed, err := number.Int64()
-	if err != nil {
-		event.addIssue("schema_error", "error", fmt.Sprintf("Envelope field %s must be an integer number when present.", key))
-		return 0, false
-	}
-	return parsed, true
 }
 
 func (event *captureEvent) addIssue(code string, severity string, message string) {

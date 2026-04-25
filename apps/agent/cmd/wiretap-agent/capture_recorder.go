@@ -39,6 +39,12 @@ func (recorder *captureRecorder) createSession(targetURL string) (captureSession
 	return recorder.session, nil
 }
 
+func (recorder *captureRecorder) setSession(session captureSession) {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	recorder.session = session
+}
+
 func (recorder *captureRecorder) updateTargetURL(targetURL string) error {
 	recorder.mu.Lock()
 	defer recorder.mu.Unlock()

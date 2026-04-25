@@ -15,6 +15,7 @@ export type AgentStatus = {
   liveClients: number;
   targetUrl?: string;
   lastError?: string;
+  streams?: StreamStatus[];
   endpoints: Record<string, string>;
 };
 
@@ -35,6 +36,31 @@ export type CaptureStats = {
   state: AgentState;
   targetUrl?: string;
   connectedAt?: string;
+  activeStreams?: number;
+  streams?: StreamStatus[];
+};
+
+export type StreamStatus = {
+  id: string;
+  url?: string;
+  state: AgentState;
+  lastError?: string;
+  connectedAt?: string;
+  connectionId?: string;
+  connections: number;
+  events: number;
+  issues: number;
+};
+
+export type CaptureSession = {
+  id: string;
+  schemaVersion: number;
+  createdAt: string;
+  updatedAt: string;
+  targetUrl?: string;
+  eventCount: number;
+  issueCount: number;
+  retainedEventCount: number;
 };
 
 export type CaptureIssue = {
@@ -58,6 +84,7 @@ export type WiretapEnvelope = {
 
 export type CaptureEvent = {
   id?: string;
+  streamId?: string;
   connectionId?: string;
   captureSeq: number;
   receivedAt: string;
@@ -86,6 +113,7 @@ export type CaptureEvent = {
 
 export type TopicState = {
   id: string;
+  streamId?: string;
   topic: string;
   key?: string;
   name: string;
@@ -111,6 +139,7 @@ export type TopicState = {
 };
 
 export type ConnectRequest = {
+  streamId?: string;
   url: string;
   headers: Record<string, string>;
   bearerToken: string;
@@ -118,6 +147,28 @@ export type ConnectRequest = {
   apiKey: string;
   subprotocols: string[];
   autoReconnect: boolean;
+};
+
+export type SchemaPluginRule = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  required?: string[];
+  stringFields?: string[];
+  numberFields?: string[];
+  integerFields?: string[];
+  enumFields?: Record<string, string[]>;
+};
+
+export type ExtractionRules = {
+  topicPath: string;
+  typePath: string;
+  seqPath: string;
+  timestampPath: string;
+  payloadPath: string;
+  keyPaths: string[];
+  schemaPlugins: SchemaPluginRule[];
+  sandboxBoundary: string;
 };
 
 export type AgentToUiMessage =
@@ -188,6 +239,19 @@ export function isCaptureEvent(value: unknown): value is CaptureEvent {
     typeof value.sizeBytes === "number" &&
     typeof value.truncated === "boolean" &&
     typeof value.oversized === "boolean"
+  );
+}
+
+export function isCaptureSession(value: unknown): value is CaptureSession {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.schemaVersion === "number" &&
+    typeof value.createdAt === "string" &&
+    typeof value.updatedAt === "string" &&
+    typeof value.eventCount === "number" &&
+    typeof value.issueCount === "number" &&
+    typeof value.retainedEventCount === "number"
   );
 }
 
