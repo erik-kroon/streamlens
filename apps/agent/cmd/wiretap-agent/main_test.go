@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -152,6 +153,107 @@ func TestRecordEventAssignsRetainedIdentityAndRingBuffer(t *testing.T) {
 	}
 }
 
+func TestRecordEventDetectsSequenceGapDuplicateAndOutOfOrder(t *testing.T) {
+	agent := &agent{connectionID: "conn-test", startedAt: timeNowForTest()}
+	for _, seq := range []int64{1, 3, 3, 2} {
+		agent.recordEvent(normalizedEnvelopeForTest("market.AAPL", "AAPL", seq))
+	}
+
+	events := agent.eventSnapshot()
+	if len(events) != 4 {
+		t.Fatalf("expected four events, got %d", len(events))
+	}
+	if countIssueCode(events[0].Issues, "gap") != 0 || !containsStatus(events[0].Statuses, "ok") {
+		t.Fatalf("expected first event to be clean, got issues=%#v statuses=%#v", events[0].Issues, events[0].Statuses)
+	}
+	if countIssueCode(events[1].Issues, "gap") != 1 || !containsStatus(events[1].Statuses, "gap") {
+		t.Fatalf("expected seq 3 to reveal a gap, got issues=%#v statuses=%#v", events[1].Issues, events[1].Statuses)
+	}
+	if events[1].Issues[0].Details["expected"] != int64(2) || events[1].Issues[0].Details["actual"] != int64(3) {
+		t.Fatalf("expected gap details to include expected 2 and actual 3, got %#v", events[1].Issues[0].Details)
+	}
+	if countIssueCode(events[2].Issues, "duplicate") != 1 || !containsStatus(events[2].Statuses, "duplicate") {
+		t.Fatalf("expected repeated seq 3 to be duplicate, got issues=%#v statuses=%#v", events[2].Issues, events[2].Statuses)
+	}
+	if countIssueCode(events[3].Issues, "out_of_order") != 1 || !containsStatus(events[3].Statuses, "out_of_order") {
+		t.Fatalf("expected seq 2 after 3 to be out of order, got issues=%#v statuses=%#v", events[3].Issues, events[3].Statuses)
+	}
+	if agent.stats().Issues != 3 {
+		t.Fatalf("expected three detected issues, got %d", agent.stats().Issues)
+	}
+	topics := agent.topicSnapshot()
+	if len(topics) != 1 {
+		t.Fatalf("expected one topic/key aggregate, got %#v", topics)
+	}
+	if topics[0].GapCount != 1 || topics[0].DuplicateCount != 1 || topics[0].OutOfOrderCount != 1 {
+		t.Fatalf("expected topic counters to reflect sequence issues, got %#v", topics[0])
+	}
+	if topics[0].LastSeq == nil || *topics[0].LastSeq != 2 {
+		t.Fatalf("expected topic last sequence 2, got %#v", topics[0].LastSeq)
+	}
+}
+
+func TestRecordEventScopesSequenceByTopicAndEffectiveKey(t *testing.T) {
+	agent := &agent{connectionID: "conn-test", startedAt: timeNowForTest()}
+	agent.recordEvent(normalizedEnvelopeForTest("market.quote", "AAPL", 1))
+	agent.recordEvent(normalizedEnvelopeForTest("market.quote", "MSFT", 1))
+	agent.recordEvent(normalizedEnvelopeForTest("market.quote", "AAPL", 2))
+
+	for _, event := range agent.eventSnapshot() {
+		if len(event.Issues) != 0 {
+			t.Fatalf("expected independent topic/key sequence scopes, got event %#v", event)
+		}
+	}
+}
+
+func TestEvaluateStaleTopicsTransitionsWithoutNewEvents(t *testing.T) {
+	agent := &agent{connectionID: "conn-test", startedAt: timeNowForTest()}
+	event := normalizedEnvelopeForTest("market.quote", "AAPL", 1)
+	event.ReceivedAt = "2026-04-25T11:00:00Z"
+	agent.recordEvent(event)
+
+	changes := agent.evaluateStaleTopics(mustParseTimeForTest("2026-04-25T11:00:01.500Z"))
+	if len(changes) != 1 {
+		t.Fatalf("expected one stale transition, got %#v", changes)
+	}
+	if !changes[0].Stale || changes[0].StaleCount != 1 || changes[0].IssueCount != 1 {
+		t.Fatalf("expected stale issue on market topic/key, got %#v", changes[0])
+	}
+	if changes[0].StaleThresholdMs == nil || *changes[0].StaleThresholdMs != 1000 {
+		t.Fatalf("expected default market stale threshold, got %#v", changes[0].StaleThresholdMs)
+	}
+	if agent.stats().Issues != 1 {
+		t.Fatalf("expected stale transition to increment stats issues, got %d", agent.stats().Issues)
+	}
+
+	repeated := agent.evaluateStaleTopics(mustParseTimeForTest("2026-04-25T11:00:02Z"))
+	if len(repeated) != 0 || agent.stats().Issues != 1 {
+		t.Fatalf("expected no duplicate stale issue, changes=%#v issues=%d", repeated, agent.stats().Issues)
+	}
+
+	fresh := normalizedEnvelopeForTest("market.quote", "AAPL", 2)
+	fresh.ReceivedAt = "2026-04-25T11:00:02.100Z"
+	agent.recordEvent(fresh)
+	topics := agent.topicSnapshot()
+	if len(topics) != 1 {
+		t.Fatalf("expected one topic, got %#v", topics)
+	}
+	if topics[0].Stale || topics[0].StaleSince != "" {
+		t.Fatalf("expected fresh event to clear stale state, got %#v", topics[0])
+	}
+	if topics[0].StaleCount != 1 || topics[0].IssueCount != 1 {
+		t.Fatalf("expected stale issue count to remain cumulative, got %#v", topics[0])
+	}
+}
+
+func normalizedEnvelopeForTest(topic string, symbol string, seq int64) captureEvent {
+	return normalizeCapture(upstreamFrame{
+		opcode:    0x1,
+		payload:   []byte(`{"topic":"` + topic + `","type":"trade_print","seq":` + strconv.FormatInt(seq, 10) + `,"symbol":"` + symbol + `","payload":{}}`),
+		sizeBytes: 96,
+	})
+}
+
 func containsStatus(statuses []string, expected string) bool {
 	for _, status := range statuses {
 		if status == expected {
@@ -173,4 +275,12 @@ func countIssueCode(issues []captureIssue, code string) int {
 
 func timeNowForTest() time.Time {
 	return time.Unix(0, 0).UTC()
+}
+
+func mustParseTimeForTest(value string) time.Time {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
 }

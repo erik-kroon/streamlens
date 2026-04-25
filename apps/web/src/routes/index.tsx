@@ -7,6 +7,8 @@ import {
   Database,
   Eraser,
   Link,
+  Pause,
+  Play,
   PlugZap,
   Radio,
   RefreshCw,
@@ -15,10 +17,21 @@ import {
   Wifi,
   WifiOff,
 } from "lucide-solid";
-import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { Dynamic } from "solid-js/web";
 import type { Component } from "solid-js";
 
 import { createAgentClient, createAgentDerivedState } from "@/lib/agent-client";
+import {
+  eventScopeLabel,
+  formatIssueBreakdown,
+  formatIssueCode,
+  maxCaptureSeq,
+  recentIssueSummaries,
+  summarizeAgentTopics,
+  summarizeTopics,
+  type TopicSummary,
+} from "@/lib/capture-view-model";
 import type { AgentStatus, CaptureEvent, CaptureIssue, CaptureStats } from "@/lib/agent-protocol";
 
 export const Route = createFileRoute("/")({
@@ -38,6 +51,15 @@ function App() {
   const [selectedSeq, setSelectedSeq] = createSignal<number>();
   const [filter, setFilter] = createSignal("");
   const [controlError, setControlError] = createSignal<string>();
+  const [now, setNow] = createSignal(Date.now());
+  const [liveFollowPaused, setLiveFollowPaused] = createSignal(false);
+  const [pausedAfterSeq, setPausedAfterSeq] = createSignal(0);
+  const [followVersion, setFollowVersion] = createSignal(0);
+
+  onMount(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
+    onCleanup(() => window.clearInterval(interval));
+  });
 
   const events = createMemo(() => agent.events());
   const selectedEvent = createMemo(() => {
@@ -58,6 +80,7 @@ function App() {
         event.displayType,
         event.eventType,
         event.effectiveKey,
+        eventScopeLabel(event),
         event.raw,
         event.rawBase64,
       ]
@@ -65,7 +88,18 @@ function App() {
         .some((value) => String(value).toLowerCase().includes(query)),
     );
   });
-  const topics = createMemo(() => summarizeTopics(events()));
+  const latestFilteredEvent = createMemo(() => filteredEvents().at(-1));
+  const latestCaptureSeq = createMemo(() => maxCaptureSeq(events()));
+  const bufferedSincePause = createMemo(() =>
+    liveFollowPaused() ? events().filter((event) => event.captureSeq > pausedAfterSeq()).length : 0,
+  );
+  const topics = createMemo(() => {
+    const agentTopics = agent.topics();
+    if (agentTopics.length > 0) {
+      return summarizeAgentTopics(agentTopics, now());
+    }
+    return summarizeTopics(events(), now());
+  });
   const endpoints = createMemo(() => {
     const status = agent.status();
     return status ? Object.entries(status.endpoints) : [];
@@ -96,6 +130,47 @@ function App() {
       }),
     );
 
+  createEffect(() => {
+    if (liveFollowPaused()) {
+      return;
+    }
+    const latest = latestFilteredEvent();
+    if (latest && selectedSeq() !== latest.captureSeq) {
+      setSelectedSeq(latest.captureSeq);
+    }
+  });
+
+  const pauseLiveFollow = () => {
+    setPausedAfterSeq(latestCaptureSeq());
+    setLiveFollowPaused(true);
+  };
+
+  const resumeLiveFollow = () => {
+    setLiveFollowPaused(false);
+    const latest = latestFilteredEvent();
+    if (latest) {
+      setSelectedSeq(latest.captureSeq);
+    }
+    setFollowVersion((version) => version + 1);
+  };
+
+  const selectEvent = (captureSeq: number) => {
+    setSelectedSeq(captureSeq);
+    const latest = latestFilteredEvent();
+    if (!liveFollowPaused() && latest && captureSeq !== latest.captureSeq) {
+      pauseLiveFollow();
+    }
+  };
+
+  const clearCapture = () =>
+    runControl(async () => {
+      await agent.clearCapture();
+      setSelectedSeq(undefined);
+      setPausedAfterSeq(0);
+      setLiveFollowPaused(false);
+      setFollowVersion((version) => version + 1);
+    });
+
   return (
     <main class="relative h-full min-h-0 overflow-hidden bg-neutral-950 pb-9 text-neutral-100">
       <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]">
@@ -113,7 +188,11 @@ function App() {
 
             <div class="flex flex-wrap items-center gap-2">
               <StatusPill online={agentView.isOnline()} label={agentView.statusLabel()} />
-              <IconTextButton icon={Ban} label="Disconnect" onClick={() => runControl(agent.disconnectUpstream)} />
+              <IconTextButton
+                icon={Ban}
+                label="Disconnect"
+                onClick={() => runControl(agent.disconnectUpstream)}
+              />
               <IconTextButton icon={Link} label="Reconnect UI" onClick={agent.reconnect} />
             </div>
           </div>
@@ -147,7 +226,7 @@ function App() {
             reconnect={() => runControl(agent.reconnectUpstream)}
           />
 
-          <section class="grid min-h-0 grid-rows-[auto_auto_1fr] border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:border-x lg:border-b-0">
+          <section class="grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_auto_1fr] border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:border-x lg:border-b-0">
             <PanelHeader
               icon={Database}
               title="Captured Events"
@@ -163,28 +242,47 @@ function App() {
                   onInput={(event) => setFilter(event.currentTarget.value)}
                 />
               </div>
-              <IconTextButton icon={Eraser} label="Clear" onClick={() => runControl(agent.clearCapture)} />
+              <IconTextButton
+                icon={liveFollowPaused() ? Play : Pause}
+                label={
+                  liveFollowPaused()
+                    ? `Resume ${formatCount(bufferedSincePause())}`
+                    : "Pause follow"
+                }
+                onClick={liveFollowPaused() ? resumeLiveFollow : pauseLiveFollow}
+                primary={liveFollowPaused()}
+              />
+              <IconTextButton icon={Eraser} label="Clear" onClick={clearCapture} />
             </div>
             <VirtualEventTable
               connected={agentView.isUpstreamConnected()}
               events={filteredEvents()}
+              isLiveFollowPaused={liveFollowPaused()}
+              followVersion={followVersion()}
               selectedSeq={selectedEvent()?.captureSeq}
-              onSelect={setSelectedSeq}
+              onSelect={selectEvent}
             />
           </section>
 
-          <aside class="grid min-h-0 grid-rows-[auto_1fr] border-b border-neutral-800 bg-neutral-950 lg:col-start-3 lg:border-b-0">
+          <aside class="grid min-h-0 min-w-0 grid-rows-[auto_1fr] border-b border-neutral-800 bg-neutral-950 lg:col-start-3 lg:border-b-0">
             <PanelHeader
               icon={Server}
               title="Payload Inspector"
-              detail={selectedEvent() ? `Capture #${selectedEvent()?.captureSeq}` : "No event selected"}
+              detail={
+                selectedEvent() ? `Capture #${selectedEvent()?.captureSeq}` : "No event selected"
+              }
             />
             <Inspector event={selectedEvent()} />
           </aside>
 
-          <section class="grid min-h-0 grid-cols-1 border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:col-end-4 lg:row-start-2 lg:grid-cols-[300px_minmax(0,1fr)] lg:border-l lg:border-t lg:border-b-0">
-            <TopicPanel topics={topics()} />
-            <CapturePanel stats={agent.stats()} events={events()} />
+          <section class="grid min-h-0 min-w-0 grid-cols-1 border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:col-end-4 lg:row-start-2 lg:grid-cols-[300px_minmax(0,1fr)] lg:border-l lg:border-t lg:border-b-0">
+            <TopicPanel topics={topics()} activeFilter={filter()} onFilterTopic={setFilter} />
+            <CapturePanel
+              stats={agent.stats()}
+              events={events()}
+              topics={topics()}
+              onSelectEvent={selectEvent}
+            />
           </section>
         </section>
 
@@ -234,7 +332,11 @@ type AgentPanelProps = {
 function AgentPanel(props: AgentPanelProps) {
   return (
     <aside class="min-h-0 overflow-y-auto overflow-x-hidden border-b border-neutral-800 bg-neutral-950 lg:row-span-2 lg:border-b-0">
-      <PanelHeader icon={Wifi} title="Agent Connection" detail={props.stats?.state ?? props.status?.state ?? props.phase} />
+      <PanelHeader
+        icon={Wifi}
+        title="Agent Connection"
+        detail={props.stats?.state ?? props.status?.state ?? props.phase}
+      />
       <div class="space-y-3 p-3">
         <div class="rounded-md border border-neutral-800 bg-neutral-900/70 p-3">
           <div class="mb-3 flex min-w-0 items-center justify-between gap-3">
@@ -249,9 +351,7 @@ function AgentPanel(props: AgentPanelProps) {
           </dl>
         </div>
 
-        <Show when={props.controlError}>
-          {(message) => <InlineIssue message={message()} />}
-        </Show>
+        <Show when={props.controlError}>{(message) => <InlineIssue message={message()} />}</Show>
 
         <div class="space-y-3 rounded-md border border-neutral-800 bg-neutral-900/50 p-3">
           <div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-neutral-500">
@@ -260,11 +360,27 @@ function AgentPanel(props: AgentPanelProps) {
           </div>
           <Field label="Target URI" value={props.targetUrl} onInput={props.setTargetUrl} mono />
           <div class="grid grid-cols-2 gap-2">
-            <Field label="Bearer token" value={props.bearerToken} onInput={props.setBearerToken} type="password" />
-            <Field label="Subprotocols" value={props.subprotocols} onInput={props.setSubprotocols} placeholder="json, v2" mono />
+            <Field
+              label="Bearer token"
+              value={props.bearerToken}
+              onInput={props.setBearerToken}
+              type="password"
+            />
+            <Field
+              label="Subprotocols"
+              value={props.subprotocols}
+              onInput={props.setSubprotocols}
+              placeholder="json, v2"
+              mono
+            />
           </div>
           <div class="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-2">
-            <Field label="API key header" value={props.apiKeyHeader} onInput={props.setApiKeyHeader} mono />
+            <Field
+              label="API key header"
+              value={props.apiKeyHeader}
+              onInput={props.setApiKeyHeader}
+              mono
+            />
             <Field label="API key" value={props.apiKey} onInput={props.setApiKey} type="password" />
           </div>
           <label class="grid min-w-0 gap-1">
@@ -312,6 +428,8 @@ function AgentPanel(props: AgentPanelProps) {
 function VirtualEventTable(props: {
   connected: boolean;
   events: CaptureEvent[];
+  isLiveFollowPaused: boolean;
+  followVersion: number;
   selectedSeq: number | undefined;
   onSelect: (captureSeq: number) => void;
 }) {
@@ -341,7 +459,26 @@ function VirtualEventTable(props: {
     const end = Math.min(props.events.length, start + visibleCount);
     return { start, end };
   });
-  const visibleEvents = createMemo(() => props.events.slice(visibleRange().start, visibleRange().end));
+  const visibleEvents = createMemo(() =>
+    props.events.slice(visibleRange().start, visibleRange().end),
+  );
+
+  createEffect(() => {
+    if (props.isLiveFollowPaused) {
+      return;
+    }
+    const eventCount = props.events.length;
+    const followVersion = props.followVersion;
+    const element = viewport();
+    if (!element) {
+      return;
+    }
+    void eventCount;
+    void followVersion;
+    const nextScrollTop = Math.max(0, totalHeight() - element.clientHeight);
+    element.scrollTop = nextScrollTop;
+    setScrollTop(nextScrollTop);
+  });
 
   return (
     <div class="grid min-h-0 grid-rows-[34px_1fr]">
@@ -349,6 +486,7 @@ function VirtualEventTable(props: {
         <span>Seq</span>
         <span>Received</span>
         <span>Topic</span>
+        <span>Status</span>
         <span>Type</span>
         <span>Payload preview</span>
       </div>
@@ -358,7 +496,7 @@ function VirtualEventTable(props: {
           class="event-table-scroll min-h-0 overflow-auto"
           onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
         >
-          <div class="relative min-w-[860px]" style={{ height: `${totalHeight()}px` }}>
+          <div class="relative min-w-[960px]" style={{ height: `${totalHeight()}px` }}>
             <For each={visibleEvents()}>
               {(event, index) => {
                 const eventIndex = () => visibleRange().start + index();
@@ -372,14 +510,27 @@ function VirtualEventTable(props: {
                     onClick={() => props.onSelect(event.captureSeq)}
                   >
                     <span class="font-mono text-neutral-300">{event.captureSeq}</span>
-                    <span class="font-mono text-neutral-400">{formatEventTime(event.receivedAt)}</span>
+                    <span class="font-mono text-neutral-400">
+                      {formatEventTime(event.receivedAt)}
+                    </span>
                     <span class="truncate font-mono font-medium text-cyan-100">
                       {event.displayTopic ?? event.topic ?? "unknown"}
                     </span>
-                    <span class={event.issues?.length ? "truncate font-mono text-amber-200" : "truncate font-mono text-neutral-300"}>
+                    <span>
+                      <EventStatusBadge event={event} />
+                    </span>
+                    <span
+                      class={
+                        event.issues?.length
+                          ? "truncate font-mono text-amber-200"
+                          : "truncate font-mono text-neutral-300"
+                      }
+                    >
                       {event.displayType ?? event.eventType ?? event.opcode}
                     </span>
-                    <span class="truncate text-left font-mono text-neutral-400">{previewPayload(event)}</span>
+                    <span class="truncate text-left font-mono text-neutral-400">
+                      {previewPayload(event)}
+                    </span>
                   </button>
                 );
               }}
@@ -407,7 +558,11 @@ function Inspector(props: { event: CaptureEvent | undefined }) {
     <Show
       when={props.event}
       fallback={
-        <EmptyPanel icon={Server} title="Select an event" detail="Payload, parsed envelope, issues, and raw frame details render here." />
+        <EmptyPanel
+          icon={Server}
+          title="Select an event"
+          detail="Payload, parsed envelope, issues, and raw frame details render here."
+        />
       }
     >
       {(event) => (
@@ -415,7 +570,9 @@ function Inspector(props: { event: CaptureEvent | undefined }) {
           <div class="border-b border-neutral-800 p-4">
             <dl class="grid grid-cols-[88px_1fr] gap-y-2 text-sm">
               <dt class="text-neutral-500">Sequence</dt>
-              <dd class="truncate text-right font-mono text-neutral-100">{event().seq ?? event().captureSeq}</dd>
+              <dd class="truncate text-right font-mono text-neutral-100">
+                {event().seq ?? event().captureSeq}
+              </dd>
               <dt class="text-neutral-500">Topic</dt>
               <dd class="truncate text-right font-mono text-cyan-100">
                 {event().displayTopic ?? event().topic ?? "unknown"}
@@ -467,28 +624,59 @@ function Inspector(props: { event: CaptureEvent | undefined }) {
   );
 }
 
-function TopicPanel(props: { topics: Array<{ name: string; count: number; issues: number }> }) {
+function TopicPanel(props: {
+  topics: TopicSummary[];
+  activeFilter: string;
+  onFilterTopic: (value: string) => void;
+}) {
   return (
     <div class="min-h-0 border-b border-neutral-800 lg:border-r lg:border-b-0">
       <PanelHeader icon={Activity} title="Topics" detail={`${props.topics.length} scopes`} />
       <Show
         when={props.topics.length > 0}
-        fallback={<EmptyPanel icon={Activity} title="No topics active" detail="Topic freshness and issue counts appear after capture starts." />}
+        fallback={
+          <EmptyPanel
+            icon={Activity}
+            title="No topics active"
+            detail="Topic freshness and issue counts appear after capture starts."
+          />
+        }
       >
-        <div class="grid gap-2 p-3">
+        <div class="grid max-h-full gap-2 overflow-auto p-3">
           <For each={props.topics}>
             {(topic) => (
-              <div class="rounded-md border border-neutral-800 bg-neutral-900/60 p-3">
-                <div class="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                class={`grid gap-2 rounded-md border p-3 text-left transition-colors ${
+                  props.activeFilter === topic.name
+                    ? "border-cyan-300/45 bg-cyan-300/10"
+                    : "border-neutral-800 bg-neutral-900/60 hover:border-neutral-700 hover:bg-neutral-900"
+                }`}
+                onClick={() =>
+                  props.onFilterTopic(props.activeFilter === topic.name ? "" : topic.name)
+                }
+              >
+                <div class="flex min-w-0 items-center justify-between gap-2">
                   <span class="truncate font-mono text-sm text-neutral-200">{topic.name}</span>
-                  <span class={topic.issues > 0 ? "badge-error" : "badge-live"}>
-                    {topic.issues > 0 ? `${topic.issues} issue` : "Live"}
+                  <TopicStateBadge topic={topic} />
+                </div>
+                <div class="grid grid-cols-3 gap-2 text-xs">
+                  <TopicMetric label="Rate" value={`${formatRate(topic.ratePerSecond)}/s`} />
+                  <TopicMetric label="Fresh" value={formatFreshness(topic.freshnessMs)} />
+                  <TopicMetric
+                    label="Last seq"
+                    value={topic.lastSeq === undefined ? "--" : String(topic.lastSeq)}
+                  />
+                </div>
+                <div class="flex min-w-0 items-center justify-between gap-3 text-xs text-neutral-500">
+                  <span>
+                    {formatCount(topic.count)} events / {formatCount(topic.keyCount)} keys
+                  </span>
+                  <span class={topic.issueCount > 0 ? "text-amber-200" : "text-neutral-500"}>
+                    {formatIssueBreakdown(topic)}
                   </span>
                 </div>
-                <div class="mt-3 h-1.5 rounded-full bg-neutral-800">
-                  <div class="h-full rounded-full bg-cyan-300" style={{ width: `${Math.min(100, topic.count * 12)}%` }} />
-                </div>
-              </div>
+              </button>
             )}
           </For>
         </div>
@@ -497,16 +685,110 @@ function TopicPanel(props: { topics: Array<{ name: string; count: number; issues
   );
 }
 
-function CapturePanel(props: { stats: CaptureStats | undefined; events: CaptureEvent[] }) {
-  const issueCount = createMemo(() => props.events.filter((event) => event.issues?.length).length);
+function TopicStateBadge(props: { topic: TopicSummary }) {
+  const className = () => {
+    if (props.topic.stale || props.topic.issueCount > 0) {
+      return "badge-error";
+    }
+    if (props.topic.state === "live") {
+      return "badge-live";
+    }
+    return "badge-muted";
+  };
+  const label = () => {
+    if (props.topic.stale) {
+      return "Stale";
+    }
+    if (props.topic.issueCount > 0) {
+      return `${formatCount(props.topic.issueCount)} issue${props.topic.issueCount === 1 ? "" : "s"}`;
+    }
+    if (props.topic.state === "live") {
+      return "Live";
+    }
+    if (props.topic.state === "warming") {
+      return "Warm";
+    }
+    return "Quiet";
+  };
+  return <span class={className()}>{label()}</span>;
+}
+
+function TopicMetric(props: { label: string; value: string }) {
+  return (
+    <span class="grid min-w-0 gap-1 rounded-md border border-neutral-800 bg-neutral-950/55 px-2 py-1.5">
+      <span class="truncate text-[10px] font-medium uppercase text-neutral-600">{props.label}</span>
+      <span class="truncate font-mono text-neutral-200">{props.value}</span>
+    </span>
+  );
+}
+
+function EventStatusBadge(props: { event: CaptureEvent }) {
+  const code = () => props.event.issues?.[0]?.code;
+  const label = () => {
+    if (code() === "out_of_order") {
+      return "Order";
+    }
+    if (code() === "parse_error") {
+      return "Parse";
+    }
+    if (code() === "schema_error") {
+      return "Schema";
+    }
+    return code() ? formatIssueCode(code() ?? "") : "OK";
+  };
+  return <span class={code() ? "badge-error" : "badge-live"}>{label()}</span>;
+}
+
+function CapturePanel(props: {
+  stats: CaptureStats | undefined;
+  events: CaptureEvent[];
+  topics: TopicSummary[];
+  onSelectEvent: (captureSeq: number) => void;
+}) {
+  const issueCount = createMemo(() =>
+    props.events.reduce((count, event) => count + (event.issues?.length ?? 0), 0),
+  );
+  const staleTopicCount = createMemo(() => props.topics.filter((topic) => topic.stale).length);
+  const issueSummaries = createMemo(() => recentIssueSummaries(props.events));
   return (
     <div class="grid min-h-0 grid-rows-[auto_1fr]">
-      <PanelHeader icon={Wifi} title="Capture Status" detail={`${issueCount()} flagged`} />
-      <div class="grid grid-cols-2 gap-px bg-neutral-800 p-px text-sm md:grid-cols-4">
-        <MetricCard label="Connections" value={props.stats?.connections ?? 0} />
-        <MetricCard label="Events" value={props.stats?.events ?? props.events.length} />
-        <MetricCard label="Issues" value={props.stats?.issues ?? issueCount()} />
-        <MetricCard label="Clients" value={props.stats?.liveClients ?? 0} />
+      <PanelHeader
+        icon={Wifi}
+        title="Capture Status"
+        detail={`${props.stats?.issues ?? issueCount()} flagged`}
+      />
+      <div class="grid min-h-0 grid-rows-[auto_1fr]">
+        <div class="grid grid-cols-2 gap-px bg-neutral-800 p-px text-sm md:grid-cols-5">
+          <MetricCard label="Connections" value={props.stats?.connections ?? 0} />
+          <MetricCard label="Events" value={props.stats?.events ?? props.events.length} />
+          <MetricCard label="Issues" value={props.stats?.issues ?? issueCount()} />
+          <MetricCard label="Stale" value={staleTopicCount()} />
+          <MetricCard label="Clients" value={props.stats?.liveClients ?? 0} />
+        </div>
+        <div class="min-h-0 overflow-auto border-t border-neutral-800 p-3">
+          <Show
+            when={issueSummaries().length > 0}
+            fallback={<div class="text-sm text-neutral-500">Recent stream issues appear here.</div>}
+          >
+            <div class="grid gap-2">
+              <For each={issueSummaries()}>
+                {({ event, issue }) => (
+                  <button
+                    type="button"
+                    class="grid min-w-0 grid-cols-[80px_112px_1fr] items-center gap-3 rounded-md border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-left text-xs hover:border-neutral-700 hover:bg-neutral-900"
+                    onClick={() => props.onSelectEvent(event.captureSeq)}
+                  >
+                    <span class="font-mono text-neutral-400">#{event.captureSeq}</span>
+                    <span class="badge-error justify-self-start">
+                      {formatIssueCode(issue.code)}
+                    </span>
+                    <span class="min-w-0 truncate text-neutral-300">{issue.message}</span>
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
+        </div>
       </div>
     </div>
   );
@@ -528,7 +810,11 @@ function StatusPill(props: { online: boolean; label: string; compact?: boolean }
   );
 }
 
-function PanelHeader(props: { icon: Component<{ size?: number; class?: string }>; title: string; detail: string }) {
+function PanelHeader(props: {
+  icon: Component<{ size?: number; class?: string }>;
+  title: string;
+  detail: string;
+}) {
   const Icon = props.icon;
   return (
     <div class="flex h-12 items-center justify-between gap-3 border-b border-neutral-800 px-4">
@@ -569,7 +855,6 @@ function IconTextButton(props: {
   onClick?: () => void;
   primary?: boolean;
 }) {
-  const Icon = props.icon;
   return (
     <button
       type="button"
@@ -578,9 +863,9 @@ function IconTextButton(props: {
           ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100 hover:bg-cyan-300/20"
           : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:border-neutral-500 hover:bg-neutral-800"
       }`}
-      onClick={props.onClick}
+      onClick={() => props.onClick?.()}
     >
-      <Icon class="shrink-0" size={15} />
+      <Dynamic component={props.icon} class="shrink-0" size={15} />
       <span class="truncate">{props.label}</span>
     </button>
   );
@@ -624,9 +909,16 @@ function InlineIssue(props: { message: string }) {
 
 function IssueBadge(props: { issue: CaptureIssue }) {
   return (
-    <div class="rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
-      <span class="font-medium uppercase">{props.issue.code}</span>
-      <span class="ml-2 text-amber-50/80">{props.issue.message}</span>
+    <div class="grid gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
+      <div>
+        <span class="font-medium uppercase">{props.issue.code}</span>
+        <span class="ml-2 text-amber-50/80">{props.issue.message}</span>
+      </div>
+      <Show when={props.issue.details}>
+        <pre class="overflow-auto rounded border border-amber-400/20 bg-neutral-950/50 p-2 font-mono text-xs leading-5 text-amber-50/80">
+          {stringifyInspectorValue(props.issue.details)}
+        </pre>
+      </Show>
     </div>
   );
 }
@@ -636,12 +928,20 @@ function EmptyState(props: { connected: boolean }) {
     <EmptyPanel
       icon={Database}
       title={props.connected ? "Awaiting upstream frames" : "No captured events yet"}
-      detail={props.connected ? "Captured WebSocket messages will render here in capture order." : "Connect an upstream WebSocket to start capturing events."}
+      detail={
+        props.connected
+          ? "Captured WebSocket messages will render here in capture order."
+          : "Connect an upstream WebSocket to start capturing events."
+      }
     />
   );
 }
 
-function EmptyPanel(props: { icon: Component<{ size?: number; class?: string }>; title: string; detail: string }) {
+function EmptyPanel(props: {
+  icon: Component<{ size?: number; class?: string }>;
+  title: string;
+  detail: string;
+}) {
   const Icon = props.icon;
   return (
     <div class="flex min-h-[180px] flex-col items-center justify-center gap-2 p-6 text-center">
@@ -670,18 +970,6 @@ function parseHeaders(value: string): Record<string, string> {
   return headers;
 }
 
-function summarizeTopics(events: CaptureEvent[]) {
-  const map = new Map<string, { name: string; count: number; issues: number }>();
-  for (const event of events) {
-    const name = event.displayTopic ?? event.topic ?? "(raw)";
-    const current = map.get(name) ?? { name, count: 0, issues: 0 };
-    current.count += 1;
-    current.issues += event.issues?.length ?? 0;
-    map.set(name, current);
-  }
-  return [...map.values()].sort((a, b) => b.count - a.count).slice(0, 6);
-}
-
 function previewPayload(event: CaptureEvent): string {
   if (event.oversized) {
     return "OVERSIZED " + (event.raw ?? event.rawBase64 ?? "");
@@ -694,7 +982,9 @@ function previewPayload(event: CaptureEvent): string {
 
 function formatInspectorTab(event: CaptureEvent, tab: InspectorTab): string {
   if (tab === "parsed") {
-    return stringifyInspectorValue(event.envelope ?? { parseError: event.parseError ?? "No parsed envelope" });
+    return stringifyInspectorValue(
+      event.envelope ?? { parseError: event.parseError ?? "No parsed envelope" },
+    );
   }
   if (tab === "payload") {
     return stringifyInspectorValue(event.envelope?.payload ?? null);
@@ -737,6 +1027,23 @@ function formatEventTime(value: string): string {
 
 function formatTime(value: Date | undefined): string {
   return value?.toLocaleTimeString() ?? "Never";
+}
+
+function formatFreshness(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "--";
+  }
+  if (value < 1_000) {
+    return `${Math.max(0, Math.round(value))}ms`;
+  }
+  return `${Math.round(value / 1_000)}s`;
+}
+
+function formatRate(value: number): string {
+  if (value >= 10) {
+    return value.toFixed(0);
+  }
+  return value.toFixed(1);
 }
 
 function formatUptime(value: number | undefined): string {

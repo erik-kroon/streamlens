@@ -237,7 +237,6 @@ Create issues in this order unless implementation priorities change:
 31. Native packet inspection captures low-level traffic metadata
 32. Design review for dense developer-tool ergonomics
 
-
 Phase 0: reconcile current partial implementation against issues 1-4.
 
 Phase 1, parallel:
