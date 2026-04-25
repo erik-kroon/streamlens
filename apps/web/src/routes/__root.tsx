@@ -1,5 +1,5 @@
 import { Outlet, createRootRouteWithContext } from "@tanstack/solid-router";
-import { TanStackRouterDevtools } from "@tanstack/solid-router-devtools";
+// import { TanStackRouterDevtools } from "@tanstack/solid-router-devtools";
 
 import Header from "@/components/header";
 export interface RouterContext {}
@@ -15,7 +15,7 @@ function RootComponent() {
         <Header />
         <Outlet />
       </div>
-      <TanStackRouterDevtools />
+      {/*<TanStackRouterDevtools />*/}
     </>
   );
 }
