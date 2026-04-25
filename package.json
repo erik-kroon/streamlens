@@ -17,6 +17,7 @@
     "dev": "turbo dev",
     "build": "turbo build",
     "check-types": "turbo check-types",
+    "dev:agent": "cd apps/agent && go run ./cmd/wiretap-agent",
     "dev:web": "turbo -F web dev",
     "dev:desktop": "turbo -F desktop dev:hmr",
     "build:desktop": "turbo -F desktop build:stable",
@@ -29,6 +30,8 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/three": "^0.184.0",
     "@wiretap/config": "workspace:*",
     "oxfmt": "^0.46.0",
     "oxlint": "^1.61.0",
