@@ -72,7 +72,7 @@ func defaultCaptureStoreDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "wiretap", "captures"), nil
+	return filepath.Join(base, "streamlens", "captures"), nil
 }
 
 func (store *captureStore) loadOrCreateCurrentSession() (captureSessionSnapshot, error) {

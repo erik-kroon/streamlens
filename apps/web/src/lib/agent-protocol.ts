@@ -66,6 +66,14 @@ export type CaptureSession = {
   retainedEventCount: number;
 };
 
+export type CaptureEventPage = {
+  session: CaptureSession;
+  offset: number;
+  limit: number;
+  total: number;
+  events: CaptureEvent[];
+};
+
 export type CaptureIssue = {
   code: string;
   severity: "info" | "warning" | "error" | string;
@@ -75,7 +83,7 @@ export type CaptureIssue = {
   details?: unknown;
 };
 
-export type WiretapEnvelope = {
+export type StreamLensEnvelope = {
   topic: string;
   type: string;
   seq?: number;
@@ -124,7 +132,7 @@ export type CaptureEvent = {
   seq?: number;
   sourceTs?: unknown;
   correlation?: OtelCorrelation;
-  envelope?: WiretapEnvelope;
+  envelope?: StreamLensEnvelope;
   parseError?: string;
   statuses?: string[];
   issues?: CaptureIssue[];
@@ -167,6 +175,17 @@ export type ConnectRequest = {
   apiKey: string;
   subprotocols: string[];
   autoReconnect: boolean;
+  faults?: FaultInjectionConfig;
+};
+
+export type FaultInjectionConfig = {
+  enabled: boolean;
+  scenario: "off" | "drop" | "duplicate" | "reorder" | "delay" | "mutate" | "chaos";
+  dropEvery?: number;
+  duplicateEvery?: number;
+  reorderEvery?: number;
+  delayMs?: number;
+  mutateEvery?: number;
 };
 
 export type SchemaPluginRule = {

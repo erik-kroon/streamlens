@@ -4,8 +4,8 @@ const webBuildDir = "../web/dist";
 
 export default {
   app: {
-    name: "wiretap",
-    identifier: "dev.bettertstack.wiretap.desktop",
+    name: "streamlens",
+    identifier: "dev.bettertstack.streamlens.desktop",
     version: "0.0.1",
   },
   runtime: {

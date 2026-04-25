@@ -35,13 +35,14 @@ import {
   formatIssueBreakdown,
   formatIssueCode,
   maxCaptureSeq,
-  recentIssueSummaries,
+  summarizeEventDiff,
   summarizeLatency,
   summarizeAgentTopics,
-  summarizeStreamDiff,
+  summarizeTimeline,
   summarizeTopics,
   type LatencyAnalytics,
   type StreamDiffSummary,
+  type TimelineSummary,
   type TopicSummary,
 } from "@/lib/capture-view-model";
 import type {
@@ -67,11 +68,29 @@ const demoScenarios = [
   { id: "stale", label: "Stale" },
   { id: "malformed", label: "Malformed" },
   { id: "oversized", label: "Oversized" },
+  { id: "fuzz", label: "Fuzz" },
 ] as const;
 
 type DemoScenario = (typeof demoScenarios)[number]["id"];
 type ReplaySpeed = 0.25 | 0.5 | 1 | 2 | 4 | 8;
 type UpstreamTransport = "websocket" | "sse";
+type ReplayServerFormat = "raw" | "jsonl" | "tape";
+type FaultScenario = "off" | "drop" | "duplicate" | "reorder" | "delay" | "mutate" | "chaos";
+
+const faultScenarios: { id: FaultScenario; label: string }[] = [
+  { id: "off", label: "Off" },
+  { id: "drop", label: "Drop" },
+  { id: "duplicate", label: "Duplicate" },
+  { id: "reorder", label: "Reorder" },
+  { id: "delay", label: "Delay" },
+  { id: "mutate", label: "Mutate" },
+  { id: "chaos", label: "Chaos" },
+];
+type DiffSourceOption = {
+  id: string;
+  label: string;
+  detail: string;
+};
 
 const defaultExtractionRules: ExtractionRules = {
   topicPath: "topic",
@@ -142,14 +161,25 @@ function App() {
   const [targetUrl, setTargetUrl] = createSignal(demoStreamUrl("normal", "websocket"));
   const [streamId, setStreamId] = createSignal("default");
   const [streamFilter, setStreamFilter] = createSignal("all");
-  const [diffBaseStream, setDiffBaseStream] = createSignal("default");
-  const [diffCompareStream, setDiffCompareStream] = createSignal("");
+  const [diffBaseSource, setDiffBaseSource] = createSignal("");
+  const [diffCompareSource, setDiffCompareSource] = createSignal("");
+  const [diffSessionEvents, setDiffSessionEvents] = createSignal<Record<string, CaptureEvent[]>>(
+    {},
+  );
+  const [diffLoadingSources, setDiffLoadingSources] = createSignal<Record<string, boolean>>({});
+  const [diffError, setDiffError] = createSignal<string>();
   const [headersText, setHeadersText] = createSignal("");
   const [bearerToken, setBearerToken] = createSignal("");
   const [apiKeyHeader, setApiKeyHeader] = createSignal("x-api-key");
   const [apiKey, setApiKey] = createSignal("");
   const [subprotocols, setSubprotocols] = createSignal("");
   const [autoReconnect, setAutoReconnect] = createSignal(false);
+  const [faultScenario, setFaultScenario] = createSignal<FaultScenario>("off");
+  const [faultDropEvery, setFaultDropEvery] = createSignal(5);
+  const [faultDuplicateEvery, setFaultDuplicateEvery] = createSignal(4);
+  const [faultReorderEvery, setFaultReorderEvery] = createSignal(5);
+  const [faultDelayMs, setFaultDelayMs] = createSignal(250);
+  const [faultMutateEvery, setFaultMutateEvery] = createSignal(4);
   const [selectedSeq, setSelectedSeq] = createSignal<number>();
   const [filter, setFilter] = createSignal("");
   const [controlError, setControlError] = createSignal<string>();
@@ -160,6 +190,10 @@ function App() {
   const [replayEnabled, setReplayEnabled] = createSignal(false);
   const [replayPlaying, setReplayPlaying] = createSignal(false);
   const [replaySpeed, setReplaySpeed] = createSignal<ReplaySpeed>(1);
+  const [replayServerSpeed, setReplayServerSpeed] = createSignal<ReplaySpeed>(1);
+  const [replayServerFormat, setReplayServerFormat] = createSignal<ReplayServerFormat>("raw");
+  const [replayServerLoop, setReplayServerLoop] = createSignal(false);
+  const [replayServerPaused, setReplayServerPaused] = createSignal(false);
   const [replayClockMs, setReplayClockMs] = createSignal(0);
   const [extractionRulesText, setExtractionRulesText] = createSignal(
     JSON.stringify(defaultExtractionRules, null, 2),
@@ -256,6 +290,7 @@ function App() {
       : sourceEvents.filter((event) => (event.streamId ?? "default") === selectedStream);
   });
   const latencyAnalytics = createMemo(() => summarizeLatency(analyticsEvents()));
+  const timelineSummary = createMemo(() => summarizeTimeline(analyticsEvents(), topics(), now()));
   const bufferedSincePause = createMemo(() =>
     liveFollowPaused() ? events().filter((event) => event.captureSeq > pausedAfterSeq()).length : 0,
   );
@@ -289,30 +324,98 @@ function App() {
     }
     return [...ids].sort();
   });
+  const diffSources = createMemo<DiffSourceOption[]>(() => [
+    ...streamIds().map((id) => ({
+      id: liveDiffSourceId(id),
+      label: `Live ${id}`,
+      detail: `${formatCount(events().filter((event) => (event.streamId ?? "default") === id).length)} events`,
+    })),
+    ...agent.sessions().map((session) => ({
+      id: sessionDiffSourceId(session.id),
+      label: `Capture ${shortSessionID(session.id)}`,
+      detail: `${formatCount(session.eventCount)} events`,
+    })),
+  ]);
   createEffect(() => {
-    const ids = streamIds();
-    if (ids.length === 0) {
+    const sources = diffSources();
+    if (sources.length === 0) {
       return;
     }
-    if (!ids.includes(diffBaseStream())) {
-      setDiffBaseStream(ids[0]);
+    const nextBase = sources.some((source) => source.id === diffBaseSource())
+      ? diffBaseSource()
+      : sources[0].id;
+    if (nextBase !== diffBaseSource()) {
+      setDiffBaseSource(nextBase);
     }
-    if (!diffCompareStream() || !ids.includes(diffCompareStream())) {
-      setDiffCompareStream(ids.find((id) => id !== diffBaseStream()) ?? ids[0]);
+    if (
+      !diffCompareSource() ||
+      diffCompareSource() === nextBase ||
+      !sources.some((source) => source.id === diffCompareSource())
+    ) {
+      setDiffCompareSource(sources.find((source) => source.id !== nextBase)?.id ?? sources[0].id);
     }
   });
+  createEffect(() => {
+    void ensureDiffSourceEvents(diffBaseSource());
+    void ensureDiffSourceEvents(diffCompareSource());
+  });
   const streamDiff = createMemo(() => {
-    const base = diffBaseStream();
-    const compare = diffCompareStream();
+    const base = diffBaseSource();
+    const compare = diffCompareSource();
     if (!base || !compare || base === compare) {
       return undefined;
     }
-    return summarizeStreamDiff(events(), base, compare);
+    const baseEvents = eventsForDiffSource(base);
+    const compareEvents = eventsForDiffSource(compare);
+    if (!baseEvents || !compareEvents) {
+      return undefined;
+    }
+    return summarizeEventDiff(
+      baseEvents,
+      compareEvents,
+      diffSourceLabel(base, diffSources()),
+      diffSourceLabel(compare, diffSources()),
+    );
   });
+  const streamDiffLoading = createMemo(
+    () =>
+      Boolean(diffLoadingSources()[diffBaseSource()]) ||
+      Boolean(diffLoadingSources()[diffCompareSource()]),
+  );
   const endpoints = createMemo(() => {
     const status = agent.status();
     return status ? Object.entries(status.endpoints) : [];
   });
+
+  async function ensureDiffSourceEvents(sourceId: string) {
+    const sessionId = sessionIdFromDiffSource(sourceId);
+    if (!sessionId || diffSessionEvents()[sourceId] || diffLoadingSources()[sourceId]) {
+      return;
+    }
+
+    setDiffLoadingSources((current) => ({ ...current, [sourceId]: true }));
+    setDiffError(undefined);
+    try {
+      const sessionEvents = await agent.readSessionEvents(sessionId);
+      setDiffSessionEvents((current) => ({ ...current, [sourceId]: sessionEvents }));
+    } catch (caught) {
+      setDiffError(caught instanceof Error ? caught.message : "failed to load capture events");
+    } finally {
+      setDiffLoadingSources((current) => {
+        const next = { ...current };
+        delete next[sourceId];
+        return next;
+      });
+    }
+  }
+
+  function eventsForDiffSource(sourceId: string): CaptureEvent[] | undefined {
+    const liveStreamId = streamIdFromDiffSource(sourceId);
+    if (liveStreamId) {
+      return events().filter((event) => (event.streamId ?? "default") === liveStreamId);
+    }
+    return diffSessionEvents()[sourceId];
+  }
 
   const runControl = async (action: () => Promise<void>) => {
     setControlError(undefined);
@@ -338,6 +441,15 @@ function App() {
           .map((value) => value.trim())
           .filter(Boolean),
         autoReconnect: autoReconnect(),
+        faults: {
+          enabled: faultScenario() !== "off",
+          scenario: faultScenario(),
+          dropEvery: faultDropEvery(),
+          duplicateEvery: faultDuplicateEvery(),
+          reorderEvery: faultReorderEvery(),
+          delayMs: faultDelayMs(),
+          mutateEvery: faultMutateEvery(),
+        },
       }),
     );
 
@@ -495,6 +607,33 @@ function App() {
     runControl(() => agent.exportSessionJSONL(sessionId));
   const exportSavedSessionTape = (sessionId: string) =>
     runControl(() => agent.exportSessionTape(sessionId));
+  const replayEndpointForSession = (sessionId: string) =>
+    sessionReplayUrl(agent.httpUrl, sessionId, {
+      speed: replayServerSpeed(),
+      loop: replayServerLoop(),
+      paused: replayServerPaused(),
+      format: replayServerFormat(),
+    });
+  const connectReplaySession = (sessionId: string) =>
+    runControl(async () => {
+      const replayUrl = replayEndpointForSession(sessionId);
+      const replayStreamId = `replay-${sessionId.slice(-8)}`;
+      setTransport("websocket");
+      setTargetUrl(replayUrl);
+      setStreamId(replayStreamId);
+      setAutoReconnect(false);
+      await agent.connectUpstream({
+        streamId: replayStreamId,
+        transport: "websocket",
+        url: replayUrl,
+        headers: {},
+        bearerToken: "",
+        apiKeyHeader: "",
+        apiKey: "",
+        subprotocols: [],
+        autoReconnect: false,
+      });
+    });
   const saveExtractionRules = () =>
     runControl(async () => {
       const parsed = JSON.parse(extractionRulesText()) as ExtractionRules;
@@ -512,7 +651,7 @@ function App() {
                 <Radio size={18} />
               </div>
               <div class="min-w-0">
-                <h1 class="truncate text-base font-semibold tracking-normal">Wiretap</h1>
+                <h1 class="truncate text-base font-semibold tracking-normal">StreamLens</h1>
                 <p class="truncate text-xs text-neutral-400">{agentView.targetLabel()}</p>
               </div>
             </div>
@@ -568,6 +707,18 @@ function App() {
             setSubprotocols={setSubprotocols}
             autoReconnect={autoReconnect()}
             setAutoReconnect={setAutoReconnect}
+            faultScenario={faultScenario()}
+            setFaultScenario={setFaultScenario}
+            faultDropEvery={faultDropEvery()}
+            setFaultDropEvery={setFaultDropEvery}
+            faultDuplicateEvery={faultDuplicateEvery()}
+            setFaultDuplicateEvery={setFaultDuplicateEvery}
+            faultReorderEvery={faultReorderEvery()}
+            setFaultReorderEvery={setFaultReorderEvery}
+            faultDelayMs={faultDelayMs()}
+            setFaultDelayMs={setFaultDelayMs}
+            faultMutateEvery={faultMutateEvery()}
+            setFaultMutateEvery={setFaultMutateEvery}
             connect={connect}
             reconnect={() => runControl(() => agent.reconnectUpstream(streamId()))}
             refreshSessions={refreshSessions}
@@ -575,6 +726,16 @@ function App() {
             deleteSession={deleteSavedSession}
             exportSession={exportSavedSession}
             exportSessionTape={exportSavedSessionTape}
+            replayServerSpeed={replayServerSpeed()}
+            setReplayServerSpeed={setReplayServerSpeed}
+            replayServerFormat={replayServerFormat()}
+            setReplayServerFormat={setReplayServerFormat}
+            replayServerLoop={replayServerLoop()}
+            setReplayServerLoop={setReplayServerLoop}
+            replayServerPaused={replayServerPaused()}
+            setReplayServerPaused={setReplayServerPaused}
+            replayEndpoint={replayEndpointForSession}
+            connectReplaySession={connectReplaySession}
             extractionRulesText={extractionRulesText()}
             setExtractionRulesText={setExtractionRulesText}
             saveExtractionRules={saveExtractionRules}
@@ -666,15 +827,17 @@ function App() {
             <TopicPanel topics={topics()} activeFilter={filter()} onFilterTopic={setFilter} />
             <LatencyPanel analytics={latencyAnalytics()} onSelectEvent={selectEvent} />
             <StreamDiffPanel
-              streams={streamIds()}
-              baseStream={diffBaseStream()}
-              compareStream={diffCompareStream()}
+              sources={diffSources()}
+              baseSource={diffBaseSource()}
+              compareSource={diffCompareSource()}
               summary={streamDiff()}
-              onBaseChange={setDiffBaseStream}
-              onCompareChange={setDiffCompareStream}
+              loading={streamDiffLoading()}
+              error={diffError()}
+              onBaseChange={setDiffBaseSource}
+              onCompareChange={setDiffCompareSource}
               onSelectEvent={selectEvent}
             />
-            <CapturePanel stats={agent.stats()} events={events()} onSelectEvent={selectEvent} />
+            <TimelinePanel summary={timelineSummary()} onSelectEvent={selectEvent} />
           </section>
         </section>
 
@@ -726,6 +889,18 @@ type AgentPanelProps = {
   setSubprotocols: (value: string) => void;
   autoReconnect: boolean;
   setAutoReconnect: (value: boolean) => void;
+  faultScenario: FaultScenario;
+  setFaultScenario: (value: FaultScenario) => void;
+  faultDropEvery: number;
+  setFaultDropEvery: (value: number) => void;
+  faultDuplicateEvery: number;
+  setFaultDuplicateEvery: (value: number) => void;
+  faultReorderEvery: number;
+  setFaultReorderEvery: (value: number) => void;
+  faultDelayMs: number;
+  setFaultDelayMs: (value: number) => void;
+  faultMutateEvery: number;
+  setFaultMutateEvery: (value: number) => void;
   connect: () => void;
   reconnect: () => void;
   refreshSessions: () => void;
@@ -733,6 +908,16 @@ type AgentPanelProps = {
   deleteSession: (sessionId: string) => void;
   exportSession: (sessionId: string) => void;
   exportSessionTape: (sessionId: string) => void;
+  replayServerSpeed: ReplaySpeed;
+  setReplayServerSpeed: (value: ReplaySpeed) => void;
+  replayServerFormat: ReplayServerFormat;
+  setReplayServerFormat: (value: ReplayServerFormat) => void;
+  replayServerLoop: boolean;
+  setReplayServerLoop: (value: boolean) => void;
+  replayServerPaused: boolean;
+  setReplayServerPaused: (value: boolean) => void;
+  replayEndpoint: (sessionId: string) => string;
+  connectReplaySession: (sessionId: string) => void;
   extractionRulesText: string;
   setExtractionRulesText: (value: string) => void;
   saveExtractionRules: () => void;
@@ -770,6 +955,16 @@ function AgentPanel(props: AgentPanelProps) {
           onDelete={props.deleteSession}
           onExport={props.exportSession}
           onExportTape={props.exportSessionTape}
+          replaySpeed={props.replayServerSpeed}
+          onReplaySpeedChange={props.setReplayServerSpeed}
+          replayFormat={props.replayServerFormat}
+          onReplayFormatChange={props.setReplayServerFormat}
+          replayLoop={props.replayServerLoop}
+          onReplayLoopChange={props.setReplayServerLoop}
+          replayPaused={props.replayServerPaused}
+          onReplayPausedChange={props.setReplayServerPaused}
+          replayEndpoint={props.replayEndpoint}
+          onConnectReplay={props.connectReplaySession}
         />
 
         <StreamList streams={props.streams} />
@@ -842,7 +1037,7 @@ function AgentPanel(props: AgentPanelProps) {
             <span class="text-xs text-neutral-500">Custom headers</span>
             <textarea
               class="field min-h-[58px] w-full min-w-0 resize-none font-mono"
-              placeholder={"x-stream-id: demo\nx-client: wiretap"}
+              placeholder={"x-stream-id: demo\nx-client: streamlens"}
               value={props.headersText}
               onInput={(event) => props.setHeadersText(event.currentTarget.value)}
             />
@@ -857,6 +1052,51 @@ function AgentPanel(props: AgentPanelProps) {
               />
               <span class="truncate">Auto reconnect</span>
             </label>
+            <div class="grid gap-2 rounded-md border border-neutral-800 bg-neutral-950/45 p-2">
+              <label class="grid min-w-0 gap-1">
+                <span class="truncate text-xs text-neutral-500">Fault injection</span>
+                <select
+                  class="field h-8 min-h-8 w-full py-1 text-xs"
+                  value={props.faultScenario}
+                  onInput={(event) =>
+                    props.setFaultScenario(event.currentTarget.value as FaultScenario)
+                  }
+                >
+                  <For each={faultScenarios}>
+                    {(scenario) => <option value={scenario.id}>{scenario.label}</option>}
+                  </For>
+                </select>
+              </label>
+              <Show when={props.faultScenario !== "off"}>
+                <div class="grid grid-cols-3 gap-2">
+                  <NumericField
+                    label="Drop"
+                    value={props.faultDropEvery}
+                    onInput={props.setFaultDropEvery}
+                  />
+                  <NumericField
+                    label="Dup"
+                    value={props.faultDuplicateEvery}
+                    onInput={props.setFaultDuplicateEvery}
+                  />
+                  <NumericField
+                    label="Reorder"
+                    value={props.faultReorderEvery}
+                    onInput={props.setFaultReorderEvery}
+                  />
+                  <NumericField
+                    label="Delay ms"
+                    value={props.faultDelayMs}
+                    onInput={props.setFaultDelayMs}
+                  />
+                  <NumericField
+                    label="Mutate"
+                    value={props.faultMutateEvery}
+                    onInput={props.setFaultMutateEvery}
+                  />
+                </div>
+              </Show>
+            </div>
             <div class="grid grid-cols-2 gap-2">
               <IconTextButton icon={PlugZap} label="Connect" onClick={props.connect} primary />
               <IconTextButton icon={RefreshCw} label="Reconnect" onClick={props.reconnect} />
@@ -888,6 +1128,16 @@ function SessionLibrary(props: {
   onDelete: (sessionId: string) => void;
   onExport: (sessionId: string) => void;
   onExportTape: (sessionId: string) => void;
+  replaySpeed: ReplaySpeed;
+  onReplaySpeedChange: (speed: ReplaySpeed) => void;
+  replayFormat: ReplayServerFormat;
+  onReplayFormatChange: (format: ReplayServerFormat) => void;
+  replayLoop: boolean;
+  onReplayLoopChange: (loop: boolean) => void;
+  replayPaused: boolean;
+  onReplayPausedChange: (paused: boolean) => void;
+  replayEndpoint: (sessionId: string) => string;
+  onConnectReplay: (sessionId: string) => void;
 }) {
   return (
     <div class="space-y-2 rounded-md border border-neutral-800 bg-neutral-900/50 p-3">
@@ -904,6 +1154,58 @@ function SessionLibrary(props: {
         >
           <RefreshCw size={13} />
         </button>
+      </div>
+      <div class="grid gap-2 rounded-md border border-neutral-800 bg-neutral-950/45 p-2">
+        <div class="grid grid-cols-2 gap-2">
+          <label class="grid min-w-0 gap-1">
+            <span class="truncate text-xs text-neutral-500">Replay speed</span>
+            <select
+              class="field h-8 w-full min-w-0"
+              value={props.replaySpeed}
+              onInput={(event) =>
+                props.onReplaySpeedChange(Number(event.currentTarget.value) as ReplaySpeed)
+              }
+            >
+              <For each={[0.25, 0.5, 1, 2, 4, 8] as ReplaySpeed[]}>
+                {(speed) => <option value={speed}>{speed}x</option>}
+              </For>
+            </select>
+          </label>
+          <label class="grid min-w-0 gap-1">
+            <span class="truncate text-xs text-neutral-500">Replay source</span>
+            <select
+              class="field h-8 w-full min-w-0"
+              value={props.replayFormat}
+              onInput={(event) =>
+                props.onReplayFormatChange(event.currentTarget.value as ReplayServerFormat)
+              }
+            >
+              <option value="raw">Raw</option>
+              <option value="jsonl">JSONL</option>
+              <option value="tape">Tape</option>
+            </select>
+          </label>
+        </div>
+        <div class="grid grid-cols-2 gap-2 text-sm text-neutral-300">
+          <label class="flex min-w-0 items-center gap-2">
+            <input
+              class="shrink-0 accent-cyan-300"
+              type="checkbox"
+              checked={props.replayLoop}
+              onInput={(event) => props.onReplayLoopChange(event.currentTarget.checked)}
+            />
+            <span class="truncate">Loop</span>
+          </label>
+          <label class="flex min-w-0 items-center gap-2">
+            <input
+              class="shrink-0 accent-cyan-300"
+              type="checkbox"
+              checked={props.replayPaused}
+              onInput={(event) => props.onReplayPausedChange(event.currentTarget.checked)}
+            />
+            <span class="truncate">Start paused</span>
+          </label>
+        </div>
       </div>
       <Show
         when={props.sessions.length > 0}
@@ -941,11 +1243,16 @@ function SessionLibrary(props: {
                       </span>
                     </div>
                   </button>
-                  <div class="grid grid-cols-4 gap-1">
+                  <div class="grid grid-cols-5 gap-1">
                     <MiniIconButton
                       icon={FolderOpen}
                       label="Open"
                       onClick={() => props.onOpen(session.id)}
+                    />
+                    <MiniIconButton
+                      icon={Play}
+                      label="Replay"
+                      onClick={() => props.onConnectReplay(session.id)}
                     />
                     <MiniIconButton
                       icon={Download}
@@ -963,6 +1270,9 @@ function SessionLibrary(props: {
                       onClick={() => props.onDelete(session.id)}
                       danger
                     />
+                  </div>
+                  <div class="truncate font-mono text-[11px] text-neutral-500">
+                    {props.replayEndpoint(session.id)}
                   </div>
                 </div>
               );
@@ -1581,19 +1891,19 @@ function LatencyHotspotButton(props: {
 }
 
 function StreamDiffPanel(props: {
-  streams: string[];
-  baseStream: string;
-  compareStream: string;
+  sources: DiffSourceOption[];
+  baseSource: string;
+  compareSource: string;
   summary: StreamDiffSummary | undefined;
-  onBaseChange: (streamId: string) => void;
-  onCompareChange: (streamId: string) => void;
+  loading: boolean;
+  error: string | undefined;
+  onBaseChange: (sourceId: string) => void;
+  onCompareChange: (sourceId: string) => void;
   onSelectEvent: (captureSeq: number) => void;
 }) {
   const issueTotal = createMemo(
     () =>
-      (props.summary?.missing ?? 0) +
-      (props.summary?.extra ?? 0) +
-      (props.summary?.divergent ?? 0),
+      (props.summary?.missing ?? 0) + (props.summary?.extra ?? 0) + (props.summary?.divergent ?? 0),
   );
 
   return (
@@ -1604,13 +1914,27 @@ function StreamDiffPanel(props: {
         detail={`${formatCount(issueTotal())} differences`}
       />
       <Show
-        when={props.streams.length > 1 && props.summary}
+        when={props.sources.length > 1 && props.summary}
         fallback={
-          <EmptyPanel
-            icon={GitCompare}
-            title="No comparable streams"
-            detail="Capture at least two streams to align events by scope, type, and sequence."
-          />
+          <Show
+            when={props.loading}
+            fallback={
+              <EmptyPanel
+                icon={GitCompare}
+                title={props.error ? "Diff unavailable" : "No comparable sources"}
+                detail={
+                  props.error ??
+                  "Capture at least two streams or save captures to align events by scope, type, and sequence."
+                }
+              />
+            }
+          >
+            <EmptyPanel
+              icon={GitCompare}
+              title="Loading diff source"
+              detail="Saved capture events are loading."
+            />
+          </Show>
         }
       >
         {(summary) => (
@@ -1620,11 +1944,15 @@ function StreamDiffPanel(props: {
                 <span class="truncate text-xs text-neutral-500">Base</span>
                 <select
                   class="field h-8 min-h-8 w-full py-1 text-xs"
-                  value={props.baseStream}
+                  value={props.baseSource}
                   onInput={(event) => props.onBaseChange(event.currentTarget.value)}
                 >
-                  <For each={props.streams}>
-                    {(stream) => <option value={stream}>{stream}</option>}
+                  <For each={props.sources}>
+                    {(source) => (
+                      <option value={source.id}>
+                        {source.label} ({source.detail})
+                      </option>
+                    )}
                   </For>
                 </select>
               </label>
@@ -1632,11 +1960,15 @@ function StreamDiffPanel(props: {
                 <span class="truncate text-xs text-neutral-500">Compare</span>
                 <select
                   class="field h-8 min-h-8 w-full py-1 text-xs"
-                  value={props.compareStream}
+                  value={props.compareSource}
                   onInput={(event) => props.onCompareChange(event.currentTarget.value)}
                 >
-                  <For each={props.streams}>
-                    {(stream) => <option value={stream}>{stream}</option>}
+                  <For each={props.sources}>
+                    {(source) => (
+                      <option value={source.id}>
+                        {source.label} ({source.detail})
+                      </option>
+                    )}
                   </For>
                 </select>
               </label>
@@ -1651,17 +1983,32 @@ function StreamDiffPanel(props: {
 
             <div class="grid gap-2">
               <For
-                each={summary().rows.filter((row) => row.status !== "matched").slice(0, 12)}
-                fallback={<div class="text-sm text-neutral-500">Streams are aligned.</div>}
+                each={summary()
+                  .rows.filter((row) => row.status !== "matched")
+                  .slice(0, 12)}
+                fallback={<div class="text-sm text-neutral-500">Sources are aligned.</div>}
               >
                 {(row) => {
                   const event = () => row.baseEvent ?? row.compareEvent;
+                  const selectableEvent = () => {
+                    if (row.baseEvent && streamIdFromDiffSource(props.baseSource)) {
+                      return row.baseEvent;
+                    }
+                    if (row.compareEvent && streamIdFromDiffSource(props.compareSource)) {
+                      return row.compareEvent;
+                    }
+                    return undefined;
+                  };
                   return (
                     <button
                       type="button"
-                      class="grid min-w-0 grid-cols-[82px_1fr] gap-2 rounded-md border border-neutral-800 bg-neutral-950/45 p-2 text-left text-xs hover:border-neutral-700 hover:bg-neutral-900"
+                      class={`grid min-w-0 grid-cols-[82px_1fr] gap-2 rounded-md border border-neutral-800 bg-neutral-950/45 p-2 text-left text-xs ${
+                        selectableEvent()
+                          ? "hover:border-neutral-700 hover:bg-neutral-900"
+                          : "cursor-default"
+                      }`}
                       onClick={() => {
-                        const target = event();
+                        const target = selectableEvent();
                         if (target) {
                           props.onSelectEvent(target.captureSeq);
                         }
@@ -1671,9 +2018,7 @@ function StreamDiffPanel(props: {
                         {formatDiffStatus(row.status)}
                       </span>
                       <span class="truncate font-mono text-neutral-300">{row.key}</span>
-                      <span class="font-mono text-neutral-600">
-                        #{event()?.captureSeq ?? "--"}
-                      </span>
+                      <span class="font-mono text-neutral-600">#{event()?.captureSeq ?? "--"}</span>
                       <span class="truncate text-neutral-500">{row.detail}</span>
                     </button>
                   );
@@ -1721,58 +2066,168 @@ function EventStatusBadge(props: { event: CaptureEvent; replayState?: ReplayEven
   return <span class={className()}>{label()}</span>;
 }
 
-function CapturePanel(props: {
-  stats: CaptureStats | undefined;
-  events: CaptureEvent[];
+function TimelinePanel(props: {
+  summary: TimelineSummary;
   onSelectEvent: (captureSeq: number) => void;
 }) {
-  const issueCount = createMemo(() =>
-    props.events.reduce((count, event) => count + (event.issues?.length ?? 0), 0),
-  );
-  const issueSummaries = createMemo(() => recentIssueSummaries(props.events));
+  const recentMarkers = createMemo(() => props.summary.markers.slice(0, 6));
+  const chartMarkers = createMemo(() => props.summary.markers.slice(0, 36));
   return (
     <div class="grid min-h-0 grid-rows-[auto_1fr]">
       <PanelHeader
-        icon={Wifi}
-        title="Capture Status"
-        detail={`${props.stats?.issues ?? issueCount()} flagged`}
+        icon={Clock3}
+        title="Timeline"
+        detail={`${formatCount(props.summary.eventCount)} events / ${formatCount(props.summary.issueCount)} flagged`}
       />
-      <div class="grid min-h-0 grid-rows-[auto_1fr]">
-        <div class="grid grid-cols-2 gap-px bg-neutral-800 p-px text-sm md:grid-cols-4 xl:grid-cols-7">
-          <MetricCard label="Connections" value={props.stats?.connections ?? 0} />
-          <MetricCard label="Events" value={props.stats?.events ?? props.events.length} />
-          <MetricCard label="Retained" value={props.stats?.retainedEvents ?? props.events.length} />
-          <MetricCard label="Dropped" value={props.stats?.droppedEvents ?? 0} />
-          <MetricCard label="Capacity" value={props.stats?.bufferCapacity ?? 10_000} />
-          <MetricCard label="Issues" value={props.stats?.issues ?? issueCount()} />
-          <MetricCard label="Clients" value={props.stats?.liveClients ?? 0} />
-        </div>
-        <div class="min-h-0 overflow-auto border-t border-neutral-800 p-3">
-          <Show
-            when={issueSummaries().length > 0}
-            fallback={<div class="text-sm text-neutral-500">Recent stream issues appear here.</div>}
-          >
-            <div class="grid gap-2">
-              <For each={issueSummaries()}>
-                {({ event, issue }) => (
-                  <button
-                    type="button"
-                    class="grid min-w-0 grid-cols-[80px_112px_1fr] items-center gap-3 rounded-md border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-left text-xs hover:border-neutral-700 hover:bg-neutral-900"
-                    onClick={() => props.onSelectEvent(event.captureSeq)}
-                  >
-                    <span class="font-mono text-neutral-400">#{event.captureSeq}</span>
-                    <span class="badge-error justify-self-start">
-                      {formatIssueCode(issue.code)}
-                    </span>
-                    <span class="min-w-0 truncate text-neutral-300">{issue.message}</span>
-                  </button>
+      <Show
+        when={props.summary.startMs !== undefined}
+        fallback={
+          <EmptyPanel
+            icon={Clock3}
+            title="No timeline yet"
+            detail="Density, issue markers, reconnects, stale intervals, and latency appear after capture starts."
+          />
+        }
+      >
+        <div class="grid min-h-0 grid-rows-[auto_auto_1fr] gap-3 overflow-auto p-3">
+          <div class="grid grid-cols-4 gap-2 text-xs">
+            <TopicMetric label="Window" value={formatTimelineDuration(props.summary.durationMs)} />
+            <TopicMetric label="Peak" value={`${formatCount(props.summary.maxBucketEvents)}/bin`} />
+            <TopicMetric
+              label="Lag max"
+              value={formatLatencyValue(props.summary.maxBucketLatencyMs)}
+            />
+            <TopicMetric label="Stale" value={formatCount(props.summary.staleIntervals.length)} />
+          </div>
+
+          <div class="relative h-[118px] overflow-hidden rounded-md border border-neutral-800 bg-neutral-950/70 px-3 pb-5 pt-3">
+            <div class="absolute inset-x-3 top-2 h-4">
+              <For each={props.summary.staleIntervals}>
+                {(interval) => (
+                  <div
+                    class="absolute top-0 h-4 rounded-sm bg-amber-300/18"
+                    style={{
+                      left: `${timelinePositionPercent(interval.startMs, props.summary)}%`,
+                      width: `${timelineWidthPercent(interval.startMs, interval.endMs, props.summary)}%`,
+                    }}
+                    title={`stale: ${interval.topic}`}
+                  />
                 )}
               </For>
             </div>
-          </Show>
+
+            <div class="absolute inset-x-3 bottom-7 top-8 grid items-end gap-0.5">
+              <div
+                class="grid h-full items-end gap-0.5"
+                style={{
+                  "grid-template-columns": `repeat(${props.summary.bucketCount}, minmax(0, 1fr))`,
+                }}
+              >
+                <For each={props.summary.buckets}>
+                  {(bucket) => (
+                    <button
+                      type="button"
+                      class={`relative min-h-0 rounded-sm ${
+                        bucket.issueCount > 0
+                          ? "bg-amber-300/55 hover:bg-amber-300/70"
+                          : bucket.reconnectCount > 0
+                            ? "bg-sky-300/55 hover:bg-sky-300/70"
+                            : "bg-cyan-300/40 hover:bg-cyan-300/60"
+                      } disabled:bg-neutral-800/70`}
+                      style={{
+                        height: `${timelineBucketHeight(bucket.eventCount, props.summary)}px`,
+                        opacity: bucket.eventCount === 0 ? 0.35 : 1,
+                      }}
+                      disabled={!bucket.representativeEvent}
+                      onClick={() => {
+                        if (bucket.representativeEvent) {
+                          props.onSelectEvent(bucket.representativeEvent.captureSeq);
+                        }
+                      }}
+                      title={`${formatCount(bucket.eventCount)} events / ${formatCount(bucket.issueCount)} issues / ${formatLatencyValue(
+                        bucket.maxSourceLagMs,
+                      )} max lag`}
+                    >
+                      <Show when={bucket.maxSourceLagMs !== undefined}>
+                        <span
+                          class="absolute inset-x-0 bottom-0 rounded-sm bg-teal-100/80"
+                          style={{
+                            height: `${timelineLatencyHeight(bucket.maxSourceLagMs, props.summary)}px`,
+                          }}
+                        />
+                      </Show>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </div>
+
+            <div class="absolute inset-x-3 top-7 h-[70px]">
+              <For each={chartMarkers()}>
+                {(marker) => (
+                  <button
+                    type="button"
+                    class={`absolute top-0 h-[70px] w-1 rounded-full ${
+                      marker.kind === "reconnect" ? "bg-sky-300" : "bg-amber-300"
+                    }`}
+                    style={{ left: `${timelinePositionPercent(marker.atMs, props.summary)}%` }}
+                    title={`${marker.label}: ${marker.detail}`}
+                    onClick={() => props.onSelectEvent(marker.event.captureSeq)}
+                  />
+                )}
+              </For>
+            </div>
+
+            <div class="absolute inset-x-3 bottom-2 flex items-center justify-between gap-3 text-[10px] text-neutral-600">
+              <span class="font-mono">{formatTimelineTime(props.summary.startMs)}</span>
+              <div class="flex items-center gap-2">
+                <TimelineLegend colorClass="bg-cyan-300/60" label="density" />
+                <TimelineLegend colorClass="bg-teal-100/80" label="lag" />
+                <TimelineLegend colorClass="bg-amber-300/60" label="issue/stale" />
+                <TimelineLegend colorClass="bg-sky-300/70" label="reconnect" />
+              </div>
+              <span class="font-mono">{formatTimelineTime(props.summary.endMs)}</span>
+            </div>
+          </div>
+
+          <div class="min-h-0 overflow-auto">
+            <Show
+              when={recentMarkers().length > 0}
+              fallback={<div class="text-sm text-neutral-500">No issue or reconnect markers.</div>}
+            >
+              <div class="grid gap-2">
+                <For each={recentMarkers()}>
+                  {(marker) => (
+                    <button
+                      type="button"
+                      class="grid min-w-0 grid-cols-[82px_94px_1fr] items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-left text-xs hover:border-neutral-700 hover:bg-neutral-900"
+                      onClick={() => props.onSelectEvent(marker.event.captureSeq)}
+                    >
+                      <span class="font-mono text-neutral-500">
+                        {formatEventTime(marker.event.receivedAt)}
+                      </span>
+                      <span class={marker.kind === "reconnect" ? "badge-replay" : "badge-error"}>
+                        {marker.label}
+                      </span>
+                      <span class="min-w-0 truncate text-neutral-300">{marker.detail}</span>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+          </div>
         </div>
-      </div>
+      </Show>
     </div>
+  );
+}
+
+function TimelineLegend(props: { colorClass: string; label: string }) {
+  return (
+    <span class="inline-flex min-w-0 items-center gap-1">
+      <span class={`h-1.5 w-3 rounded-sm ${props.colorClass}`} />
+      <span class="truncate">{props.label}</span>
+    </span>
   );
 }
 
@@ -1826,6 +2281,21 @@ function Field(props: {
         placeholder={props.placeholder}
         value={props.value}
         onInput={(event) => props.onInput(event.currentTarget.value)}
+      />
+    </label>
+  );
+}
+
+function NumericField(props: { label: string; value: number; onInput: (value: number) => void }) {
+  return (
+    <label class="grid min-w-0 gap-1">
+      <span class="truncate text-xs text-neutral-500">{props.label}</span>
+      <input
+        class="field h-8 min-h-8 w-full min-w-0 py-1 font-mono text-xs"
+        type="number"
+        min="0"
+        value={props.value}
+        onInput={(event) => props.onInput(Math.max(0, Number(event.currentTarget.value) || 0))}
       />
     </label>
   );
@@ -1970,15 +2440,6 @@ function Metric(props: { label: string; value: string }) {
   );
 }
 
-function MetricCard(props: { label: string; value: string | number }) {
-  return (
-    <div class="bg-neutral-950 p-4">
-      <div class="text-xs font-medium uppercase text-neutral-500">{props.label}</div>
-      <div class="mt-2 font-mono text-xl font-semibold text-cyan-100">{props.value}</div>
-    </div>
-  );
-}
-
 function EndpointRow(props: { label: string; value: string }) {
   return (
     <div class="grid gap-1 rounded-md border border-neutral-800 bg-neutral-900/50 p-2">
@@ -2062,7 +2523,29 @@ function parseHeaders(value: string): Record<string, string> {
 
 function demoStreamUrl(scenario: DemoScenario, transport: UpstreamTransport): string {
   const base = transport === "sse" ? "http://localhost:8791" : "ws://localhost:8791";
-  return `${base}/stream?scenario=${encodeURIComponent(scenario)}`;
+  const params = new URLSearchParams({ scenario });
+  if (scenario === "fuzz") {
+    params.set("mode", "mixed");
+    params.set("seed", "28");
+    params.set("count", "24");
+  }
+  return `${base}/stream?${params.toString()}`;
+}
+
+function sessionReplayUrl(
+  httpUrl: string,
+  sessionId: string,
+  options: { speed: ReplaySpeed; loop: boolean; paused: boolean; format: ReplayServerFormat },
+): string {
+  const params = new URLSearchParams({
+    speed: String(options.speed),
+    loop: String(options.loop),
+    paused: String(options.paused),
+    format: options.format,
+  });
+  return `${httpUrl.replace(/^http/, "ws")}/sessions/${encodeURIComponent(
+    sessionId,
+  )}/replay?${params.toString()}`;
 }
 
 function formatTransport(value: CaptureTransport | undefined): string {
@@ -2072,11 +2555,66 @@ function formatTransport(value: CaptureTransport | undefined): string {
   return "WS";
 }
 
+function liveDiffSourceId(streamId: string): string {
+  return `live:${streamId}`;
+}
+
+function sessionDiffSourceId(sessionId: string): string {
+  return `session:${sessionId}`;
+}
+
+function streamIdFromDiffSource(sourceId: string): string | undefined {
+  return sourceId.startsWith("live:") ? sourceId.slice("live:".length) : undefined;
+}
+
+function sessionIdFromDiffSource(sourceId: string): string | undefined {
+  return sourceId.startsWith("session:") ? sourceId.slice("session:".length) : undefined;
+}
+
+function diffSourceLabel(sourceId: string, sources: DiffSourceOption[]): string {
+  return sources.find((source) => source.id === sourceId)?.label ?? sourceId;
+}
+
+function shortSessionID(sessionId: string): string {
+  if (sessionId.length <= 16) {
+    return sessionId;
+  }
+  return `${sessionId.slice(0, 8)}...${sessionId.slice(-5)}`;
+}
+
 function formatDiffStatus(value: string): string {
   if (value === "divergent") {
     return "Diff";
   }
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function timelineBucketHeight(eventCount: number, summary: TimelineSummary): number {
+  if (eventCount === 0) {
+    return 4;
+  }
+  return Math.max(8, Math.round((eventCount / summary.maxBucketEvents) * 58));
+}
+
+function timelineLatencyHeight(value: number | undefined, summary: TimelineSummary): number {
+  if (value === undefined || summary.maxBucketLatencyMs <= 0) {
+    return 0;
+  }
+  return Math.max(3, Math.round((value / summary.maxBucketLatencyMs) * 30));
+}
+
+function timelinePositionPercent(valueMs: number | undefined, summary: TimelineSummary): number {
+  if (valueMs === undefined || summary.startMs === undefined || summary.durationMs <= 0) {
+    return 0;
+  }
+  return Math.min(100, Math.max(0, ((valueMs - summary.startMs) / summary.durationMs) * 100));
+}
+
+function timelineWidthPercent(startMs: number, endMs: number, summary: TimelineSummary): number {
+  return Math.max(
+    0.8,
+    timelinePositionPercent(endMs, summary) - timelinePositionPercent(startMs, summary),
+  );
 }
 
 function previewPayload(event: CaptureEvent): string {
@@ -2193,6 +2731,27 @@ function formatReplayClock(value: string | number | undefined): string {
     return "--:--:--";
   }
   return date.toLocaleTimeString(undefined, { hour12: false });
+}
+
+function formatTimelineTime(value: number | undefined): string {
+  if (value === undefined) {
+    return "--";
+  }
+  return new Date(value).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function formatTimelineDuration(value: number): string {
+  if (value >= 60_000) {
+    return `${Math.round(value / 60_000)}m`;
+  }
+  if (value >= 1_000) {
+    return `${Math.round(value / 1_000)}s`;
+  }
+  return `${Math.round(value)}ms`;
 }
 
 function formatFreshness(value: number): string {

@@ -12,7 +12,7 @@
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/router-plugin": "^1.167.22",
     "@tanstack/solid-router": "^1.168.20",
-    "@wiretap/env": "workspace:*",
+    "@streamlens/env": "workspace:*",
     "dotenv": "catalog:",
     "lucide-solid": "^1.8.0",
     "solid-js": "^1.9.12",
@@ -20,7 +20,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@wiretap/config": "workspace:*",
+    "@streamlens/config": "workspace:*",
     "typescript": "catalog:",
     "vite": "^8.0.8",
     "vite-plugin-solid": "^2.11.12"

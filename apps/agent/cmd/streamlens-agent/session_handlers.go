@@ -47,10 +47,14 @@ func (a *agent) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case action == "open" && r.Method == http.MethodPost:
 		a.handleOpenSession(w, sessionID)
+	case action == "events" && r.Method == http.MethodGet:
+		a.handleSessionEvents(w, r, sessionID)
 	case action == "export/jsonl" && r.Method == http.MethodGet:
 		a.handleExportSessionJSONL(w, sessionID)
 	case action == "export/tape" && r.Method == http.MethodGet:
 		a.handleExportSessionTape(w, sessionID)
+	case action == "replay" && r.Method == http.MethodGet:
+		a.handleSessionReplay(w, r, sessionID)
 	case action == "" && r.Method == http.MethodDelete:
 		a.handleDeleteSession(w, sessionID)
 	default:
@@ -159,6 +163,17 @@ func (a *agent) handleOpenSession(w http.ResponseWriter, sessionID string) {
 	writeJSON(w, http.StatusOK, snapshot.Session)
 }
 
+func (a *agent) handleSessionEvents(w http.ResponseWriter, r *http.Request, sessionID string) {
+	offset := parseQueryInt(r, "offset", 0)
+	limit := parseQueryInt(r, "limit", 1_000)
+	page, err := a.recorder.store.eventPage(sessionID, offset, limit)
+	if err != nil {
+		writeSessionStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
 func (a *agent) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 	snapshot, err := a.recorder.store.deleteSession(sessionID)
 	if err != nil {
@@ -259,5 +274,5 @@ func exportSessionFilename(session captureSession) string {
 	if id == "" {
 		id = "session"
 	}
-	return fmt.Sprintf("wiretap-%s.jsonl", id)
+	return fmt.Sprintf("streamlens-%s.jsonl", id)
 }

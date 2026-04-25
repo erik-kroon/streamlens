@@ -60,6 +60,48 @@ export type LatencyAnalytics = {
   longestReceiveInterval: LatencyHotspot | undefined;
 };
 
+export type TimelineBucket = {
+  index: number;
+  startMs: number;
+  endMs: number;
+  eventCount: number;
+  issueCount: number;
+  reconnectCount: number;
+  averageSourceLagMs: number | undefined;
+  maxSourceLagMs: number | undefined;
+  representativeEvent: CaptureEvent | undefined;
+};
+
+export type TimelineMarkerKind = "issue" | "reconnect";
+
+export type TimelineMarker = {
+  kind: TimelineMarkerKind;
+  atMs: number;
+  label: string;
+  detail: string;
+  event: CaptureEvent;
+};
+
+export type TimelineStaleInterval = {
+  topic: string;
+  startMs: number;
+  endMs: number;
+};
+
+export type TimelineSummary = {
+  startMs: number | undefined;
+  endMs: number | undefined;
+  durationMs: number;
+  eventCount: number;
+  issueCount: number;
+  bucketCount: number;
+  maxBucketEvents: number;
+  maxBucketLatencyMs: number;
+  buckets: TimelineBucket[];
+  markers: TimelineMarker[];
+  staleIntervals: TimelineStaleInterval[];
+};
+
 export type StreamDiffStatus = "matched" | "missing" | "extra" | "divergent";
 
 export type StreamDiffRow = {
@@ -73,6 +115,8 @@ export type StreamDiffRow = {
 export type StreamDiffSummary = {
   baseStreamId: string;
   compareStreamId: string;
+  baseLabel: string;
+  compareLabel: string;
   matched: number;
   missing: number;
   extra: number;
@@ -265,19 +309,150 @@ export function summarizeLatency(events: CaptureEvent[]): LatencyAnalytics {
   };
 }
 
+export function summarizeTimeline(
+  events: CaptureEvent[],
+  topics: TopicSummary[],
+  now: number,
+  bucketCount = 48,
+): TimelineSummary {
+  const orderedEvents = [...events].sort((a, b) => a.captureSeq - b.captureSeq);
+  const timedEvents = orderedEvents
+    .map((event) => ({ event, receivedAt: parseTimestampMs(event.receivedAt) }))
+    .filter(
+      (item): item is { event: CaptureEvent; receivedAt: number } => item.receivedAt !== undefined,
+    );
+  const issueCount = orderedEvents.reduce((count, event) => count + (event.issues?.length ?? 0), 0);
+
+  if (timedEvents.length === 0) {
+    return {
+      startMs: undefined,
+      endMs: undefined,
+      durationMs: 0,
+      eventCount: orderedEvents.length,
+      issueCount,
+      bucketCount,
+      maxBucketEvents: 0,
+      maxBucketLatencyMs: 0,
+      buckets: emptyTimelineBuckets(bucketCount),
+      markers: [],
+      staleIntervals: [],
+    };
+  }
+
+  const firstMs = timedEvents[0].receivedAt;
+  const lastMs = timedEvents[timedEvents.length - 1].receivedAt;
+  const startMs = Math.min(firstMs, ...activeStaleStartTimes(topics, now));
+  const endMs = Math.max(lastMs, now);
+  const durationMs = Math.max(1, endMs - startMs);
+  const buckets = emptyTimelineBuckets(bucketCount).map((bucket) => ({
+    ...bucket,
+    startMs: startMs + (durationMs / bucketCount) * bucket.index,
+    endMs: startMs + (durationMs / bucketCount) * (bucket.index + 1),
+  }));
+  const latencyTotals = new Array<number>(bucketCount).fill(0);
+  const latencyCounts = new Array<number>(bucketCount).fill(0);
+  const markers: TimelineMarker[] = [];
+  const previousConnectionByStream = new Map<string, string>();
+
+  for (const { event, receivedAt } of timedEvents) {
+    const index = timelineBucketIndex(receivedAt, startMs, durationMs, bucketCount);
+    const bucket = buckets[index];
+    bucket.eventCount += 1;
+    bucket.issueCount += event.issues?.length ?? 0;
+    bucket.representativeEvent = event;
+
+    const sourceTs = parseTimestampMs(event.sourceTs);
+    if (sourceTs !== undefined) {
+      const sourceLagMs = receivedAt - sourceTs;
+      latencyTotals[index] += sourceLagMs;
+      latencyCounts[index] += 1;
+      bucket.maxSourceLagMs =
+        bucket.maxSourceLagMs === undefined
+          ? sourceLagMs
+          : Math.max(bucket.maxSourceLagMs, sourceLagMs);
+    }
+
+    for (const issue of event.issues ?? []) {
+      markers.push({
+        kind: "issue",
+        atMs: receivedAt,
+        label: formatIssueCode(issue.code),
+        detail: issue.message,
+        event,
+      });
+    }
+
+    const streamId = streamIdForEvent(event);
+    const connectionId = event.connectionId;
+    const previousConnection = previousConnectionByStream.get(streamId);
+    if (connectionId && previousConnection && previousConnection !== connectionId) {
+      bucket.reconnectCount += 1;
+      markers.push({
+        kind: "reconnect",
+        atMs: receivedAt,
+        label: "Reconnect",
+        detail: `${streamId}: ${previousConnection} -> ${connectionId}`,
+        event,
+      });
+    }
+    if (connectionId) {
+      previousConnectionByStream.set(streamId, connectionId);
+    }
+  }
+
+  for (const [index, bucket] of buckets.entries()) {
+    if (latencyCounts[index] > 0) {
+      bucket.averageSourceLagMs = latencyTotals[index] / latencyCounts[index];
+    }
+  }
+
+  return {
+    startMs,
+    endMs,
+    durationMs,
+    eventCount: orderedEvents.length,
+    issueCount,
+    bucketCount,
+    maxBucketEvents: Math.max(1, ...buckets.map((bucket) => bucket.eventCount)),
+    maxBucketLatencyMs: Math.max(0, ...buckets.map((bucket) => bucket.maxSourceLagMs ?? 0)),
+    buckets,
+    markers: markers.sort((a, b) => b.atMs - a.atMs).slice(0, 80),
+    staleIntervals: topics
+      .filter((topic) => topic.stale)
+      .map((topic) => ({
+        topic: topic.name,
+        startMs: Math.max(
+          startMs,
+          topic.lastSeenAt + (topic.staleThresholdMs ?? Math.min(10_000, durationMs)),
+        ),
+        endMs,
+      }))
+      .filter((interval) => interval.endMs >= interval.startMs),
+  };
+}
+
 export function summarizeStreamDiff(
   events: CaptureEvent[],
   baseStreamId: string,
   compareStreamId: string,
 ): StreamDiffSummary {
-  const baseEvents = events
-    .filter((event) => streamIdForEvent(event) === baseStreamId)
-    .sort((a, b) => a.captureSeq - b.captureSeq);
-  const compareEvents = events
-    .filter((event) => streamIdForEvent(event) === compareStreamId)
-    .sort((a, b) => a.captureSeq - b.captureSeq);
+  return summarizeEventDiff(
+    events.filter((event) => streamIdForEvent(event) === baseStreamId),
+    events.filter((event) => streamIdForEvent(event) === compareStreamId),
+    baseStreamId,
+    compareStreamId,
+  );
+}
+
+export function summarizeEventDiff(
+  baseSourceEvents: CaptureEvent[],
+  compareSourceEvents: CaptureEvent[],
+  baseLabel: string,
+  compareLabel: string,
+): StreamDiffSummary {
+  const baseEvents = [...baseSourceEvents].sort((a, b) => a.captureSeq - b.captureSeq);
+  const compareEvents = [...compareSourceEvents].sort((a, b) => a.captureSeq - b.captureSeq);
   const compareByKey = groupEventsByDiffKey(compareEvents);
-  const usedCompareKeys = new Set<string>();
   const rows: StreamDiffRow[] = [];
 
   for (const baseEvent of baseEvents) {
@@ -289,12 +464,11 @@ export function summarizeStreamDiff(
         status: "missing",
         baseEvent,
         compareEvent: undefined,
-        detail: "Missing from compare stream",
+        detail: "Missing from compare source",
       });
       continue;
     }
 
-    usedCompareKeys.add(key);
     const baseFingerprint = diffPayloadFingerprint(baseEvent);
     const compareFingerprint = diffPayloadFingerprint(compareEvent);
     const divergent = baseFingerprint !== compareFingerprint;
@@ -307,27 +481,23 @@ export function summarizeStreamDiff(
     });
   }
 
-  for (const compareEvent of compareEvents) {
-    const key = diffEventKey(compareEvent);
-    if (usedCompareKeys.has(key)) {
-      continue;
+  for (const [key, remaining] of compareByKey) {
+    for (const compareEvent of remaining) {
+      rows.push({
+        key,
+        status: "extra",
+        baseEvent: undefined,
+        compareEvent,
+        detail: "Extra in compare source",
+      });
     }
-    const remaining = compareByKey.get(key);
-    if (!remaining?.includes(compareEvent)) {
-      continue;
-    }
-    rows.push({
-      key,
-      status: "extra",
-      baseEvent: undefined,
-      compareEvent,
-      detail: "Extra in compare stream",
-    });
   }
 
   return {
-    baseStreamId,
-    compareStreamId,
+    baseStreamId: baseLabel,
+    compareStreamId: compareLabel,
+    baseLabel,
+    compareLabel,
     matched: rows.filter((row) => row.status === "matched").length,
     missing: rows.filter((row) => row.status === "missing").length,
     extra: rows.filter((row) => row.status === "extra").length,
@@ -525,6 +695,37 @@ function maxHotspot(samples: LatencyHotspot[]): LatencyHotspot | undefined {
     }
     return max;
   }, undefined);
+}
+
+function emptyTimelineBuckets(bucketCount: number): TimelineBucket[] {
+  return Array.from({ length: bucketCount }, (_, index) => ({
+    index,
+    startMs: 0,
+    endMs: 0,
+    eventCount: 0,
+    issueCount: 0,
+    reconnectCount: 0,
+    averageSourceLagMs: undefined,
+    maxSourceLagMs: undefined,
+    representativeEvent: undefined,
+  }));
+}
+
+function activeStaleStartTimes(topics: TopicSummary[], now: number): number[] {
+  return topics
+    .filter((topic) => topic.stale)
+    .map((topic) => topic.lastSeenAt + (topic.staleThresholdMs ?? 0))
+    .filter((value) => Number.isFinite(value) && value <= now);
+}
+
+function timelineBucketIndex(
+  valueMs: number,
+  startMs: number,
+  durationMs: number,
+  bucketCount: number,
+): number {
+  const ratio = (valueMs - startMs) / durationMs;
+  return Math.min(bucketCount - 1, Math.max(0, Math.floor(ratio * bucketCount)));
 }
 
 function formatDurationLabel(value: number): string {

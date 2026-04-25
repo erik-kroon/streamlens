@@ -1,18 +1,18 @@
-# PRD: Wiretap
+# PRD: StreamLens
 
 ## Product Name
 
-**Wiretap**
+**StreamLens**
 
 ## One-Liner
 
-Wiretap is a local real-time event-stream debugger for WebSocket-based applications. A Go agent captures and normalizes live streams, while a SolidJS inspector makes sequence gaps, stale topics, malformed payloads, reconnect behavior, and exportable captures visible.
+StreamLens is a local real-time event-stream debugger for WebSocket-based applications. A Go agent captures and normalizes live streams, while a SolidJS inspector makes sequence gaps, stale topics, malformed payloads, reconnect behavior, and exportable captures visible.
 
 ## Core Thesis
 
 Real-time applications fail in subtle ways: missed events, duplicate messages, sequence gaps, stale topics, reconnect bugs, malformed payloads, source lag, and UI state drifting away from stream state.
 
-Wiretap makes those failures visible.
+StreamLens makes those failures visible.
 
 It should feel like:
 
@@ -23,7 +23,7 @@ Chrome DevTools Network tab
 + local capture/export tool
 ```
 
-Wiretap focuses on application-level event streams, not raw packets.
+StreamLens focuses on application-level event streams, not raw packets.
 
 ## Product Goals
 
@@ -43,29 +43,29 @@ The product should let a developer answer:
 
 ### Ecosystem Goal
 
-Wiretap integrates naturally with the existing local event-stream tooling ecosystem:
+StreamLens integrates naturally with the existing local event-stream tooling ecosystem:
 
 ```text
 Tape     = deterministic market-event replay engine
 Flamel   = real-time trading terminal
-Wiretap  = real-time stream debugger
+StreamLens  = real-time stream debugger
 ```
 
 The primary demo path is:
 
 ```text
-Tape -> Wiretap
+Tape -> StreamLens
 ```
 
 The later ecosystem demo path is:
 
 ```text
-Tape -> Flamel -> Wiretap
+Tape -> Flamel -> StreamLens
 ```
 
 ### Portfolio Goal
 
-Wiretap should signal:
+StreamLens should signal:
 
 - real-time systems thinking
 - Go infrastructure capability
@@ -78,26 +78,26 @@ Wiretap should signal:
 
 ## Product Positioning
 
-### What Wiretap Is
+### What StreamLens Is
 
-Wiretap is a local developer tool for inspecting live real-time streams.
+StreamLens is a local developer tool for inspecting live real-time streams.
 
 It has three layers:
 
 ```text
-Wiretap Agent
+StreamLens Agent
   - Go local capture/proxy service
 
-Wiretap Web UI
+StreamLens Web UI
   - SolidJS inspector interface
 
-Wiretap Desktop
+StreamLens Desktop
   - Electrobun shell bundling UI + agent
 ```
 
-### What Wiretap Is Not
+### What StreamLens Is Not
 
-Wiretap is not:
+StreamLens is not:
 
 - a general-purpose logging SaaS
 - an OpenTelemetry clone
@@ -114,16 +114,16 @@ It should stay focused:
 
 ## Architecture Overview
 
-Wiretap is agent-first. The Go agent is the capture truth. The SolidJS UI is the presentation truth.
+StreamLens is agent-first. The Go agent is the capture truth. The SolidJS UI is the presentation truth.
 
 ```text
 Target WebSocket Stream
         ↓
-Wiretap Agent — Go local capture/proxy service
+StreamLens Agent — Go local capture/proxy service
         ↓
-Wiretap Web UI — SolidJS inspector
+StreamLens Web UI — SolidJS inspector
         ↓
-Wiretap Desktop — Electrobun wrapper
+StreamLens Desktop — Electrobun wrapper
 ```
 
 The agent owns upstream WebSocket connections, custom headers, auth, reconnect behavior, message receipt timestamps, capture sequence, normalization, stream issue detection, buffering, status APIs, and export.
@@ -151,7 +151,7 @@ MVP is complete when:
 1. The Go agent connects to one upstream WebSocket URL.
 2. The agent supports custom headers, bearer/API-key style auth, and optional WebSocket subprotocols.
 3. The agent captures raw messages with receipt timestamps and monotonic capture sequence numbers.
-4. The agent parses and normalizes the default Wiretap envelope.
+4. The agent parses and normalizes the default StreamLens envelope.
 5. The agent captures malformed messages as raw events whenever possible.
 6. The agent detects schema errors, parse errors, oversized messages, sequence gaps, duplicate events, out-of-order events, and stale topic/key scopes.
 7. The agent keeps a bounded in-memory ring buffer of 10,000 events.
@@ -166,7 +166,7 @@ MVP is complete when:
 16. JSONL export writes the retained capture format.
 17. A local demo stream can generate normal, gap, duplicate, out-of-order, stale, malformed, oversized, and burst scenarios.
 18. A synthetic 1,000 events/sec for 10 seconds scenario does not lock the UI.
-19. Wiretap can inspect a Tape WebSocket stream that emits the default Wiretap envelope.
+19. StreamLens can inspect a Tape WebSocket stream that emits the default StreamLens envelope.
 
 ## MVP Exclusions
 
@@ -191,10 +191,10 @@ MVP does not include:
 
 ## Default Stream Contract
 
-The canonical MVP stream contract is the Wiretap envelope:
+The canonical MVP stream contract is the StreamLens envelope:
 
 ```ts
-type WiretapEnvelope = {
+type StreamLensEnvelope = {
   topic: string;
   type: string;
   seq?: number;
@@ -293,7 +293,7 @@ type AgentToUiMessage =
 
 ## Event Model
 
-Wiretap keeps both the raw message and the parsed event.
+StreamLens keeps both the raw message and the parsed event.
 
 ### Captured Event
 
@@ -308,7 +308,7 @@ type CapturedEvent = {
   originalSizeBytes: number;
   sizeBytes: number;
 
-  parsed: WiretapEnvelope | null;
+  parsed: StreamLensEnvelope | null;
   parseError?: string;
 
   topic?: string;
@@ -618,7 +618,7 @@ Oversized messages:
 - mark the event as `oversized`
 - export exactly what was retained
 
-Wiretap should not silently drop a message unless it cannot be safely represented.
+StreamLens should not silently drop a message unless it cannot be safely represented.
 
 ## JSONL Export
 
@@ -627,14 +627,14 @@ MVP exports a stable retained capture format, not the full internal mutable mode
 JSONL event shape:
 
 ```ts
-type WiretapExportEvent = {
+type StreamLensExportEvent = {
   captureSeq: number;
   connectionId: string;
   receivedAt: number;
   raw: string;
   rawTruncated: boolean;
   originalSizeBytes: number;
-  parsed: WiretapEnvelope | null;
+  parsed: StreamLensEnvelope | null;
   parseError?: string;
   sizeBytes: number;
 };
@@ -651,7 +651,7 @@ Issues can be recomputed later with newer rules.
 
 ## Demo Stream
 
-MVP includes a local demo WebSocket stream that emits the same default Wiretap envelope as Tape.
+MVP includes a local demo WebSocket stream that emits the same default StreamLens envelope as Tape.
 
 Scenarios:
 
@@ -735,7 +735,7 @@ error
 Top strip example:
 
 ```text
-WIRETAP · CONNECTED · ws://localhost:8787/stream · 12,430 events · 184 msg/s · 2 gaps · 1 stale · 0 parse errors
+STREAMLENS · CONNECTED · ws://localhost:8787/stream · 12,430 events · 184 msg/s · 2 gaps · 1 stale · 0 parse errors
 ```
 
 Metrics:
@@ -989,7 +989,7 @@ Shows:
 
 ## UI Design Direction
 
-Wiretap should feel like a serious developer tool.
+StreamLens should feel like a serious developer tool.
 
 Good references:
 
@@ -1022,7 +1022,7 @@ Avoid:
 
 ### Performance
 
-Wiretap MVP must handle:
+StreamLens MVP must handle:
 
 ```text
 1,000 events/sec for 10 seconds
@@ -1050,7 +1050,7 @@ Stretch target:
 
 ### Reliability
 
-Wiretap should not lose capture continuity just because the user pauses the view or reloads the UI. The agent remains the capture owner.
+StreamLens should not lose capture continuity just because the user pauses the view or reloads the UI. The agent remains the capture owner.
 
 ### Inspectability
 
@@ -1076,7 +1076,7 @@ Secrets supplied for upstream connection should stay local to the agent and shou
 
 ## User Stories
 
-1. As a developer, I want to connect Wiretap to a local WebSocket stream, so that I can inspect live application events.
+1. As a developer, I want to connect StreamLens to a local WebSocket stream, so that I can inspect live application events.
 2. As a developer, I want to provide custom headers or bearer/API-key auth, so that I can inspect streams that require authenticated connections.
 3. As a developer, I want the agent to keep capturing while I reload the UI, so that I do not lose stream continuity.
 4. As a developer, I want events ordered by capture sequence, so that I can understand observed stream order.
@@ -1092,8 +1092,8 @@ Secrets supplied for upstream connection should stay local to the agent and shou
 14. As a developer, I want a compact issue list, so that I can jump to recent stream problems.
 15. As a developer, I want JSONL export of the retained capture, so that I can share or analyze captured events later.
 16. As a developer, I want a deterministic demo stream, so that I can reproduce gaps, stale periods, malformed messages, and bursts without depending on another service.
-17. As a developer, I want Wiretap to handle 1,000 events/sec bursts, so that the debugger does not fail under the stream behavior it is built to inspect.
-18. As a developer, I want Wiretap to inspect Tape streams, so that I can demonstrate deterministic real-time behavior and debugging.
+17. As a developer, I want StreamLens to handle 1,000 events/sec bursts, so that the debugger does not fail under the stream behavior it is built to inspect.
+18. As a developer, I want StreamLens to inspect Tape streams, so that I can demonstrate deterministic real-time behavior and debugging.
 
 ## Milestone Plan
 
@@ -1273,7 +1273,7 @@ Build:
 
 Acceptance:
 
-- user can run Wiretap as desktop app
+- user can run StreamLens as desktop app
 - desktop app connects to local streams
 - capture export uses native file save
 
@@ -1287,8 +1287,8 @@ Best MVP demo:
 tape stream demo.tape --port 8787 --speed 10x --chaos gaps
 ```
 
-2. Start Wiretap agent.
-3. Open Wiretap UI.
+2. Start StreamLens agent.
+3. Open StreamLens UI.
 4. Connect to:
 
 ```text
@@ -1310,32 +1310,32 @@ Demo stream can reproduce the same story without Tape installed, but Tape remain
 Use this in the README:
 
 ```md
-# Wiretap
+# StreamLens
 
-Wiretap is a local real-time event-stream debugger for WebSocket-based applications.
+StreamLens is a local real-time event-stream debugger for WebSocket-based applications.
 
 A Go agent connects to live streams, captures events into a bounded local buffer, tracks topic health, detects sequence gaps, duplicate and out-of-order events, visualizes stale periods, and exposes a SolidJS inspector for debugging real-time systems.
 
-Wiretap was built for trading-terminal style applications where stream correctness, freshness, reconnect behavior, and event ordering matter.
+StreamLens was built for trading-terminal style applications where stream correctness, freshness, reconnect behavior, and event ordering matter.
 ```
 
 ## CV / Interview Positioning
 
 General version:
 
-> Built Wiretap, a Go + SolidJS real-time WebSocket stream debugger that captures event streams, tracks topic health, detects sequence gaps and stale periods, inspects payloads, and exports stable JSONL captures for deterministic debugging.
+> Built StreamLens, a Go + SolidJS real-time WebSocket stream debugger that captures event streams, tracks topic health, detects sequence gaps and stale periods, inspects payloads, and exports stable JSONL captures for deterministic debugging.
 
 Alchemy-specific version:
 
-> Built Wiretap, a local developer tool for debugging real-time trading terminal streams, with a Go capture agent, SolidJS inspector, topic health, stale-state visualization, sequence-gap detection, payload inspection, reconnect tracking, and capture export.
+> Built StreamLens, a local developer tool for debugging real-time trading terminal streams, with a Go capture agent, SolidJS inspector, topic health, stale-state visualization, sequence-gap detection, payload inspection, reconnect tracking, and capture export.
 
 Strong interview explanation:
 
-> After building Flamel, I wanted tooling that made real-time stream behavior visible. Wiretap is the tool I wished I had while debugging stale state, reconnects, sequence gaps and malformed events. A local Go agent captures and normalizes the stream, while a SolidJS UI groups events by topic/key scope, detects ordering issues, visualizes stale periods and lets me inspect or export captured payloads.
+> After building Flamel, I wanted tooling that made real-time stream behavior visible. StreamLens is the tool I wished I had while debugging stale state, reconnects, sequence gaps and malformed events. A local Go agent captures and normalizes the stream, while a SolidJS UI groups events by topic/key scope, detects ordering issues, visualizes stale periods and lets me inspect or export captured payloads.
 
 ## Product Success Criteria
 
-Wiretap is successful if a strong engineer thinks:
+StreamLens is successful if a strong engineer thinks:
 
 > This person understands that real-time apps need tooling, not just WebSockets.
 

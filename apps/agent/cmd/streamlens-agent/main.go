@@ -83,15 +83,16 @@ const (
 )
 
 type connectRequest struct {
-	StreamID      string            `json:"streamId,omitempty"`
-	Transport     string            `json:"transport,omitempty"`
-	URL           string            `json:"url"`
-	Headers       map[string]string `json:"headers"`
-	BearerToken   string            `json:"bearerToken"`
-	APIKeyHeader  string            `json:"apiKeyHeader"`
-	APIKey        string            `json:"apiKey"`
-	Subprotocols  []string          `json:"subprotocols"`
-	AutoReconnect bool              `json:"autoReconnect"`
+	StreamID      string               `json:"streamId,omitempty"`
+	Transport     string               `json:"transport,omitempty"`
+	URL           string               `json:"url"`
+	Headers       map[string]string    `json:"headers"`
+	BearerToken   string               `json:"bearerToken"`
+	APIKeyHeader  string               `json:"apiKeyHeader"`
+	APIKey        string               `json:"apiKey"`
+	Subprotocols  []string             `json:"subprotocols"`
+	AutoReconnect bool                 `json:"autoReconnect"`
+	Faults        faultInjectionConfig `json:"faults,omitempty"`
 }
 
 type upstreamSession struct {
@@ -170,59 +171,59 @@ type liveClient struct {
 }
 
 type captureEvent struct {
-	ID                string            `json:"id,omitempty"`
-	StreamID          string            `json:"streamId,omitempty"`
-	ConnectionID      string            `json:"connectionId,omitempty"`
-	Transport         string            `json:"transport,omitempty"`
-	TransportMeta     map[string]string `json:"transportMeta,omitempty"`
-	CaptureSeq        int64             `json:"captureSeq"`
-	ReceivedAt        string            `json:"receivedAt"`
-	Direction         string            `json:"direction"`
-	Opcode            string            `json:"opcode"`
-	OriginalSizeBytes int64             `json:"originalSizeBytes"`
-	SizeBytes         int64             `json:"sizeBytes"`
-	Raw               string            `json:"raw,omitempty"`
-	RawBase64         string            `json:"rawBase64,omitempty"`
-	RawTruncated      bool              `json:"rawTruncated"`
-	Truncated         bool              `json:"truncated"`
-	Oversized         bool              `json:"oversized"`
-	Topic             string            `json:"topic,omitempty"`
-	DisplayTopic      string            `json:"displayTopic"`
-	Type              string            `json:"eventType,omitempty"`
-	DisplayType       string            `json:"displayType"`
-	Key               string            `json:"key,omitempty"`
-	EffectiveKey      string            `json:"effectiveKey,omitempty"`
-	Seq               *int64            `json:"seq,omitempty"`
-	SourceTS          interface{}       `json:"sourceTs,omitempty"`
-	Correlation       *otelCorrelation  `json:"correlation,omitempty"`
-	Envelope          *wiretapEnvelope  `json:"envelope,omitempty"`
-	ParseError        string            `json:"parseError,omitempty"`
-	Statuses          []string          `json:"statuses"`
-	Issues            []captureIssue    `json:"issues,omitempty"`
+	ID                string              `json:"id,omitempty"`
+	StreamID          string              `json:"streamId,omitempty"`
+	ConnectionID      string              `json:"connectionId,omitempty"`
+	Transport         string              `json:"transport,omitempty"`
+	TransportMeta     map[string]string   `json:"transportMeta,omitempty"`
+	CaptureSeq        int64               `json:"captureSeq"`
+	ReceivedAt        string              `json:"receivedAt"`
+	Direction         string              `json:"direction"`
+	Opcode            string              `json:"opcode"`
+	OriginalSizeBytes int64               `json:"originalSizeBytes"`
+	SizeBytes         int64               `json:"sizeBytes"`
+	Raw               string              `json:"raw,omitempty"`
+	RawBase64         string              `json:"rawBase64,omitempty"`
+	RawTruncated      bool                `json:"rawTruncated"`
+	Truncated         bool                `json:"truncated"`
+	Oversized         bool                `json:"oversized"`
+	Topic             string              `json:"topic,omitempty"`
+	DisplayTopic      string              `json:"displayTopic"`
+	Type              string              `json:"eventType,omitempty"`
+	DisplayType       string              `json:"displayType"`
+	Key               string              `json:"key,omitempty"`
+	EffectiveKey      string              `json:"effectiveKey,omitempty"`
+	Seq               *int64              `json:"seq,omitempty"`
+	SourceTS          interface{}         `json:"sourceTs,omitempty"`
+	Correlation       *otelCorrelation    `json:"correlation,omitempty"`
+	Envelope          *streamlensEnvelope `json:"envelope,omitempty"`
+	ParseError        string              `json:"parseError,omitempty"`
+	Statuses          []string            `json:"statuses"`
+	Issues            []captureIssue      `json:"issues,omitempty"`
 }
 
-type wiretapExportEvent struct {
-	CaptureSeq        int64             `json:"captureSeq"`
-	StreamID          string            `json:"streamId,omitempty"`
-	ConnectionID      string            `json:"connectionId"`
-	Transport         string            `json:"transport,omitempty"`
-	TransportMeta     map[string]string `json:"transportMeta,omitempty"`
-	ReceivedAt        int64             `json:"receivedAt"`
-	Direction         string            `json:"direction"`
-	Opcode            string            `json:"opcode"`
-	Raw               string            `json:"raw"`
-	RawBase64         string            `json:"rawBase64,omitempty"`
-	RawTruncated      bool              `json:"rawTruncated"`
-	Truncated         bool              `json:"truncated"`
-	Oversized         bool              `json:"oversized"`
-	OriginalSizeBytes int64             `json:"originalSizeBytes"`
-	SizeBytes         int64             `json:"sizeBytes"`
-	Correlation       *otelCorrelation  `json:"correlation,omitempty"`
-	Parsed            *wiretapEnvelope  `json:"parsed"`
-	ParseError        string            `json:"parseError,omitempty"`
+type streamlensExportEvent struct {
+	CaptureSeq        int64               `json:"captureSeq"`
+	StreamID          string              `json:"streamId,omitempty"`
+	ConnectionID      string              `json:"connectionId"`
+	Transport         string              `json:"transport,omitempty"`
+	TransportMeta     map[string]string   `json:"transportMeta,omitempty"`
+	ReceivedAt        int64               `json:"receivedAt"`
+	Direction         string              `json:"direction"`
+	Opcode            string              `json:"opcode"`
+	Raw               string              `json:"raw"`
+	RawBase64         string              `json:"rawBase64,omitempty"`
+	RawTruncated      bool                `json:"rawTruncated"`
+	Truncated         bool                `json:"truncated"`
+	Oversized         bool                `json:"oversized"`
+	OriginalSizeBytes int64               `json:"originalSizeBytes"`
+	SizeBytes         int64               `json:"sizeBytes"`
+	Correlation       *otelCorrelation    `json:"correlation,omitempty"`
+	Parsed            *streamlensEnvelope `json:"parsed"`
+	ParseError        string              `json:"parseError,omitempty"`
 }
 
-type wiretapEnvelope struct {
+type streamlensEnvelope struct {
 	Topic   string      `json:"topic"`
 	Type    string      `json:"type"`
 	Seq     *int64      `json:"seq,omitempty"`
@@ -271,7 +272,7 @@ type upstreamFrame struct {
 func main() {
 	address := flag.String("addr", defaultAddress, "HTTP listen address")
 	demoAddress := flag.String("demo-addr", "127.0.0.1:8791", "demo WebSocket listen address; use empty string to disable")
-	dataDir := flag.String("data-dir", os.Getenv("WIRETAP_DATA_DIR"), "capture database directory")
+	dataDir := flag.String("data-dir", os.Getenv("STREAMLENS_DATA_DIR"), "capture database directory")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -286,7 +287,7 @@ func main() {
 		os.Exit(1)
 	}
 	agent := &agent{
-		id:              "wiretap-local-agent",
+		id:              "streamlens-local-agent",
 		version:         "0.2.0",
 		startedAt:       time.Now().UTC(),
 		state:           stateReady,
@@ -314,6 +315,8 @@ func main() {
 	mux.HandleFunc("/events", agent.withCORS(agent.handleEvents))
 	mux.HandleFunc("/topics", agent.withCORS(agent.handleTopics))
 	mux.HandleFunc("/extraction-rules", agent.withCORS(agent.handleExtractionRules))
+	mux.HandleFunc("/fuzz", agent.withCORS(agent.handleFuzz))
+	mux.HandleFunc("/fuzz/fixtures", agent.withCORS(agent.handleFuzzFixtures))
 	mux.HandleFunc("/export/jsonl", agent.withCORS(agent.handleExportJSONL))
 	mux.HandleFunc("/export/tape", agent.withCORS(agent.handleExportTape))
 	mux.HandleFunc("/import/jsonl", agent.withCORS(agent.handleImportJSONL))
@@ -333,7 +336,7 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	logger.Info("Wiretap agent listening", "address", "http://"+*address)
+	logger.Info("StreamLens agent listening", "address", "http://"+*address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("agent stopped", "error", err)
 		os.Exit(1)
@@ -737,6 +740,14 @@ func (a *agent) markStreamConnected(streamID string) {
 }
 
 func (a *agent) captureWebSocketFrames(ctx context.Context, streamID string, conn *upstreamConn) error {
+	a.mu.RLock()
+	stream := a.streams[streamID]
+	var injector *faultInjector
+	if stream != nil && stream.Config != nil {
+		injector = newFaultInjector(stream.Config.Faults)
+	}
+	a.mu.RUnlock()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -752,8 +763,14 @@ func (a *agent) captureWebSocketFrames(ctx context.Context, streamID string, con
 		switch frame.opcode {
 		case 0x1, 0x2:
 			frame.transport = transportWebSocket
-			event := normalizeCaptureWithRules(frame, a.currentExtractionRules())
-			a.recordEventForStream(streamID, event)
+			frames, err := injector.apply(ctx, frame)
+			if err != nil {
+				return err
+			}
+			for _, output := range frames {
+				event := normalizeCaptureWithRules(output, a.currentExtractionRules())
+				a.recordEventForStream(streamID, event)
+			}
 		case 0x8:
 			return errors.New("upstream closed websocket")
 		case 0x9:
@@ -766,6 +783,14 @@ func (a *agent) captureWebSocketFrames(ctx context.Context, streamID string, con
 
 func (a *agent) captureSSE(ctx context.Context, streamID string, reader io.Reader) error {
 	scanner := newSSEScanner(reader)
+	a.mu.RLock()
+	stream := a.streams[streamID]
+	var injector *faultInjector
+	if stream != nil && stream.Config != nil {
+		injector = newFaultInjector(stream.Config.Faults)
+	}
+	a.mu.RUnlock()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -797,16 +822,22 @@ func (a *agent) captureSSE(ctx context.Context, streamID string, reader io.Reade
 				frame.transportMeta["id"] = event.id
 			}
 		}
-		capture := normalizeCaptureWithRules(frame, a.currentExtractionRules())
-		a.recordEventForStream(streamID, capture)
+		frames, err := injector.apply(ctx, frame)
+		if err != nil {
+			return err
+		}
+		for _, output := range frames {
+			capture := normalizeCaptureWithRules(output, a.currentExtractionRules())
+			a.recordEventForStream(streamID, capture)
+		}
 	}
 }
 
-func (a *agent) recordEvent(event captureEvent) {
-	a.recordEventForStream(defaultStreamID, event)
+func (a *agent) recordEvent(event captureEvent) captureEvent {
+	return a.recordEventForStream(defaultStreamID, event)
 }
 
-func (a *agent) recordEventForStream(streamID string, event captureEvent) {
+func (a *agent) recordEventForStream(streamID string, event captureEvent) captureEvent {
 	var topic topicState
 	var hasTopic bool
 	var shouldBroadcastStats bool
@@ -872,6 +903,7 @@ func (a *agent) recordEventForStream(streamID string, event captureEvent) {
 	if shouldBroadcastStats {
 		a.broadcast(agentMessage{Type: "capture.stats", Payload: a.stats()})
 	}
+	return event
 }
 
 func (a *agent) runStaleEvaluator(ctx context.Context) {
@@ -995,11 +1027,14 @@ func (a *agent) status() agentStatus {
 			"events":        "http://localhost:8790/events",
 			"topics":        "http://localhost:8790/topics",
 			"extraction":    "http://localhost:8790/extraction-rules",
+			"fuzz":          "http://localhost:8790/fuzz",
+			"fuzzFixtures":  "http://localhost:8790/fuzz/fixtures",
 			"exportJsonl":   "http://localhost:8790/export/jsonl",
 			"exportTape":    "http://localhost:8790/export/tape",
 			"importJsonl":   "http://localhost:8790/import/jsonl",
 			"session":       "http://localhost:8790/sessions/current",
 			"sessionEvents": "http://localhost:8790/sessions/current/events",
+			"sessionReplay": "ws://localhost:8790/sessions/{sessionId}/replay",
 			"connect":       "http://localhost:8790/connect",
 			"disconnect":    "http://localhost:8790/disconnect",
 			"reconnect":     "http://localhost:8790/reconnect",
@@ -1055,11 +1090,11 @@ func (a *agent) eventSnapshot() []captureEvent {
 	return events
 }
 
-func (a *agent) exportSnapshot() []wiretapExportEvent {
+func (a *agent) exportSnapshot() []streamlensExportEvent {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	events := make([]wiretapExportEvent, 0, len(a.events))
+	events := make([]streamlensExportEvent, 0, len(a.events))
 	for _, event := range a.events {
 		events = append(events, exportEvent(event))
 	}
@@ -1086,8 +1121,8 @@ func (a *agent) setExtractionRules(rules extractionRules) {
 	a.mu.Unlock()
 }
 
-func exportEvent(event captureEvent) wiretapExportEvent {
-	return wiretapExportEvent{
+func exportEvent(event captureEvent) streamlensExportEvent {
+	return streamlensExportEvent{
 		CaptureSeq:        event.CaptureSeq,
 		StreamID:          event.StreamID,
 		ConnectionID:      event.ConnectionID,
@@ -1118,7 +1153,7 @@ func receivedAtMillis(value string) int64 {
 }
 
 func exportFilename(now time.Time) string {
-	return "wiretap-capture-" + now.Format("20060102T150405Z") + ".jsonl"
+	return "streamlens-capture-" + now.Format("20060102T150405Z") + ".jsonl"
 }
 
 func (a *agent) uptimeMs() int64 {
@@ -1254,6 +1289,12 @@ func (request *connectRequest) validate() error {
 		}
 	}
 	request.Subprotocols = subprotocols
+
+	faults, err := normalizeFaultInjectionConfig(request.Faults)
+	if err != nil {
+		return err
+	}
+	request.Faults = faults
 	return nil
 }
 
@@ -1633,7 +1674,7 @@ func normalizeCaptureWithRules(frame upstreamFrame, rules extractionRules) captu
 		return event
 	}
 
-	envelope := wiretapEnvelope{}
+	envelope := streamlensEnvelope{}
 	if payload, ok := valueAtPath(parsed, rules.PayloadPath); ok {
 		envelope.Payload = payload
 	}
@@ -1710,7 +1751,7 @@ func decodeEnvelopeObject(payload []byte) (map[string]interface{}, error) {
 
 	values, ok := parsed.(map[string]interface{})
 	if !ok {
-		return nil, errors.New("wiretap envelope must be a JSON object")
+		return nil, errors.New("streamlens envelope must be a JSON object")
 	}
 	return values, nil
 }
@@ -1812,8 +1853,12 @@ func websocketAccept(key string) string {
 }
 
 func writeWebSocketText(conn interface{ Write([]byte) (int, error) }, payload []byte) error {
+	return writeWebSocketMessage(conn, 0x1, payload)
+}
+
+func writeWebSocketMessage(conn interface{ Write([]byte) (int, error) }, opcode byte, payload []byte) error {
 	header := make([]byte, 10)
-	header[0] = 0x81
+	header[0] = 0x80 | (opcode & 0x0f)
 
 	length := len(payload)
 	switch {

@@ -1,16 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestNormalizeCaptureParsesWiretapEnvelope(t *testing.T) {
+func TestNormalizeCaptureParsesStreamLensEnvelope(t *testing.T) {
 	event := normalizeCapture(upstreamFrame{
 		opcode:    0x1,
 		payload:   []byte(`{"topic":"market.AAPL","type":"trade_print","seq":42,"ts":"2026-04-25T11:00:00Z","symbol":"AAPL","payload":{"price":150.26}}`),
@@ -230,7 +232,7 @@ func TestConnectRequestSupportsSSETransport(t *testing.T) {
 		StreamID:  "quotes",
 		Transport: "sse",
 		URL:       "http://example.test/events",
-		Headers:   map[string]string{" x-client ": " wiretap "},
+		Headers:   map[string]string{" x-client ": " streamlens "},
 	}
 
 	if err := request.validate(); err != nil {
@@ -239,7 +241,7 @@ func TestConnectRequestSupportsSSETransport(t *testing.T) {
 	if request.Transport != transportSSE {
 		t.Fatalf("expected normalized sse transport, got %q", request.Transport)
 	}
-	if request.Headers["x-client"] != "wiretap" {
+	if request.Headers["x-client"] != "streamlens" {
 		t.Fatalf("expected headers to be trimmed, got %#v", request.Headers)
 	}
 }
@@ -262,6 +264,28 @@ func TestConnectRequestInfersTransportFromScheme(t *testing.T) {
 				t.Fatalf("expected %q transport, got %q", expected, request.Transport)
 			}
 		})
+	}
+}
+
+func TestConnectRequestNormalizesFaultInjectionConfig(t *testing.T) {
+	request := connectRequest{
+		URL:       "ws://example.test/stream",
+		Transport: transportWebSocket,
+		Faults: faultInjectionConfig{
+			Enabled:  true,
+			Scenario: "chaos",
+		},
+	}
+
+	if err := request.validate(); err != nil {
+		t.Fatalf("expected request to validate: %v", err)
+	}
+	if request.Faults.DropEvery != defaultFaultDropEvery ||
+		request.Faults.DuplicateEvery != defaultFaultDuplicateEvery ||
+		request.Faults.ReorderEvery != defaultFaultReorderEvery ||
+		request.Faults.DelayMs != defaultFaultDelayMs ||
+		request.Faults.MutateEvery != defaultFaultMutateEvery {
+		t.Fatalf("expected chaos defaults to be applied, got %#v", request.Faults)
 	}
 }
 
@@ -291,6 +315,82 @@ func TestSSEScannerAndNormalizationPreserveTransportMetadata(t *testing.T) {
 	}
 	if event.Topic != "market.sse" || event.EffectiveKey != "SSE" {
 		t.Fatalf("expected normalized sse payload, got %#v", event)
+	}
+}
+
+func TestFaultInjectionScenariosSurfaceVerificationIssues(t *testing.T) {
+	cases := map[string]struct {
+		config    faultInjectionConfig
+		inputSeqs []int64
+		issueCode string
+		minEvents int
+		maxEvents int
+	}{
+		"drop": {
+			config:    faultInjectionConfig{Enabled: true, Scenario: faultScenarioDrop, DropEvery: 3},
+			inputSeqs: []int64{1, 2, 3, 4},
+			issueCode: "gap",
+			minEvents: 3,
+			maxEvents: 3,
+		},
+		"duplicate": {
+			config:    faultInjectionConfig{Enabled: true, Scenario: faultScenarioDuplicate, DuplicateEvery: 2},
+			inputSeqs: []int64{1, 2},
+			issueCode: "duplicate",
+			minEvents: 3,
+			maxEvents: 3,
+		},
+		"reorder": {
+			config:    faultInjectionConfig{Enabled: true, Scenario: faultScenarioReorder, ReorderEvery: 3},
+			inputSeqs: []int64{1, 2, 3, 4},
+			issueCode: "out_of_order",
+			minEvents: 4,
+			maxEvents: 4,
+		},
+		"mutate": {
+			config:    faultInjectionConfig{Enabled: true, Scenario: faultScenarioMutate, MutateEvery: 2},
+			inputSeqs: []int64{1, 2},
+			issueCode: "gap",
+			minEvents: 2,
+			maxEvents: 2,
+		},
+	}
+
+	for name, test := range cases {
+		t.Run(name, func(t *testing.T) {
+			agent := &agent{connectionID: "conn-test", startedAt: timeNowForTest()}
+			injector := newFaultInjector(test.config)
+			for _, seq := range test.inputSeqs {
+				payload := []byte(`{"topic":"market.fault","type":"quote","seq":` + strconv.FormatInt(seq, 10) + `,"symbol":"FLT","payload":{}}`)
+				outputs, err := injector.apply(context.Background(), upstreamFrame{
+					opcode:    0x1,
+					payload:   payload,
+					sizeBytes: int64(len(payload)),
+					transport: transportWebSocket,
+				})
+				if err != nil {
+					t.Fatalf("fault injection failed: %v", err)
+				}
+				for _, output := range outputs {
+					agent.recordEvent(normalizeCapture(output))
+				}
+			}
+
+			events := agent.eventSnapshot()
+			if len(events) < test.minEvents || len(events) > test.maxEvents {
+				t.Fatalf("expected %d-%d events, got %#v", test.minEvents, test.maxEvents, events)
+			}
+			found := false
+			for _, event := range events {
+				if countIssueCode(event.Issues, test.issueCode) > 0 {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected fault scenario to surface %q issue, got %#v", test.issueCode, events)
+			}
+		})
 	}
 }
 
@@ -406,6 +506,105 @@ func TestDemoMalformedAndOversizedScenariosNormalizeAsIssues(t *testing.T) {
 	}
 }
 
+func TestProtocolFuzzSchemaModeIsDeterministicAndFindsSequenceIssues(t *testing.T) {
+	config, err := normalizeFuzzRequest(fuzzRequest{
+		Mode:     "schema",
+		Seed:     28,
+		Count:    8,
+		MaxBytes: 512,
+	})
+	if err != nil {
+		t.Fatalf("expected fuzz config to validate: %v", err)
+	}
+
+	first := buildProtocolFuzzEvents(config, defaultExtractionRules())
+	second := buildProtocolFuzzEvents(config, defaultExtractionRules())
+	if len(first) != 8 || len(second) != 8 {
+		t.Fatalf("expected deterministic fuzz event count, got %d and %d", len(first), len(second))
+	}
+	for index := range first {
+		if first[index].Raw != second[index].Raw || first[index].ReceivedAt != second[index].ReceivedAt {
+			t.Fatalf("expected event %d to be reproducible, first=%#v second=%#v", index, first[index], second[index])
+		}
+	}
+
+	if countEventsWithIssue(first, "gap") < 1 {
+		t.Fatalf("expected schema fuzz to include a gap, got %#v", first)
+	}
+	if countEventsWithIssue(first, "duplicate") < 1 {
+		t.Fatalf("expected schema fuzz to include a duplicate, got %#v", first)
+	}
+	if countEventsWithIssue(first, "out_of_order") < 1 {
+		t.Fatalf("expected schema fuzz to include out_of_order, got %#v", first)
+	}
+	if countEventsWithIssue(first, "schema_error") < 1 {
+		t.Fatalf("expected schema fuzz to include schema errors, got %#v", first)
+	}
+}
+
+func TestHandleFuzzRecordsCurrentSessionWithSafetyLimits(t *testing.T) {
+	agent := newStoredAgentForTest(t, t.TempDir())
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/fuzz", strings.NewReader(`{"mode":"schema","seed":28,"count":8,"maxBytes":512,"streamId":"fuzz-regression"}`))
+	request.Header.Set("Content-Type", "application/json")
+	agent.handleFuzz(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var result fuzzResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("expected fuzz response payload: %v", err)
+	}
+	if result.Seed != 28 || result.Count != 8 || result.Summary.Generated != 8 {
+		t.Fatalf("expected fuzz result metadata, got %#v", result)
+	}
+	if result.Summary.ByIssue["gap"] < 1 || result.Summary.ByIssue["duplicate"] < 1 || result.Summary.ByIssue["out_of_order"] < 1 {
+		t.Fatalf("expected sequence issues in fuzz summary, got %#v", result.Summary)
+	}
+	if stats := agent.stats(); stats.Events != 8 || stats.Issues == 0 {
+		t.Fatalf("expected recorded fuzz events and issues, got %#v", stats)
+	}
+
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/fuzz", strings.NewReader(`{"count":513}`))
+	agent.handleFuzz(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected oversized fuzz request to be rejected, got %d", response.Code)
+	}
+}
+
+func TestHandleFuzzFixturesWritesImportableJSONL(t *testing.T) {
+	agent := &agent{startedAt: timeNowForTest(), extractionRules: defaultExtractionRules()}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/fuzz/fixtures?mode=mixed&seed=77&count=6&maxBytes=512&streamId=fixture", nil)
+	agent.handleFuzzFixtures(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "application/x-ndjson" {
+		t.Fatalf("expected jsonl content type, got %q", contentType)
+	}
+	if disposition := response.Header().Get("Content-Disposition"); !strings.Contains(disposition, "streamlens-fuzz-mixed-seed-77.jsonl") {
+		t.Fatalf("expected fuzz fixture filename, got %q", disposition)
+	}
+
+	lines := strings.Split(strings.TrimSpace(response.Body.String()), "\n")
+	if len(lines) != 6 {
+		t.Fatalf("expected six fixture events, got %d: %q", len(lines), response.Body.String())
+	}
+	for _, line := range lines {
+		var exported streamlensExportEvent
+		if err := json.Unmarshal([]byte(line), &exported); err != nil {
+			t.Fatalf("expected valid exported fuzz event: %v", err)
+		}
+		if exported.StreamID != "fixture" || exported.ConnectionID == "" || exported.ReceivedAt == 0 {
+			t.Fatalf("expected importable fixture identity, got %#v", exported)
+		}
+	}
+}
+
 func TestExportSnapshotWritesStableRetainedCaptureFormat(t *testing.T) {
 	agent := &agent{connectionID: "conn-test", startedAt: timeNowForTest()}
 	first := normalizedEnvelopeForTest("market.AAPL", "AAPL", 7)
@@ -473,7 +672,7 @@ func TestHandleExportJSONLWritesOneJSONEventPerLine(t *testing.T) {
 		t.Fatalf("expected one jsonl line, got %d: %q", len(lines), response.Body.String())
 	}
 
-	var exported wiretapExportEvent
+	var exported streamlensExportEvent
 	if err := json.Unmarshal([]byte(lines[0]), &exported); err != nil {
 		t.Fatalf("expected valid json line: %v", err)
 	}
@@ -534,9 +733,82 @@ func TestHandleExportTapeWritesTapeCompatibleSession(t *testing.T) {
 	if record.Payload["seq"] != float64(7) {
 		t.Fatalf("expected tape payload seq 7, got %#v", record.Payload["seq"])
 	}
-	wiretap, ok := record.Payload["wiretap"].(map[string]interface{})
-	if !ok || wiretap["captureSeq"] != float64(1) || wiretap["raw"] == "" {
-		t.Fatalf("expected wiretap metadata to be preserved, got %#v", record.Payload["wiretap"])
+	streamlens, ok := record.Payload["streamlens"].(map[string]interface{})
+	if !ok || streamlens["captureSeq"] != float64(1) || streamlens["raw"] == "" {
+		t.Fatalf("expected streamlens metadata to be preserved, got %#v", record.Payload["streamlens"])
+	}
+}
+
+func TestReplayFramesServeRawJSONLAndTapePayloads(t *testing.T) {
+	first := normalizedEnvelopeForTest("market.AAPL", "AAPL", 7)
+	first.ReceivedAt = "2026-04-25T11:00:00Z"
+	second := normalizedEnvelopeForTest("market.AAPL", "AAPL", 8)
+	second.ReceivedAt = "2026-04-25T11:00:01Z"
+	events := []captureEvent{first, second}
+
+	rawFrames, err := replayFramesForEvents(events, replayFormatRaw)
+	if err != nil {
+		t.Fatalf("expected raw replay frames: %v", err)
+	}
+	if len(rawFrames) != 2 || !strings.Contains(string(rawFrames[0].Payload), `"topic":"market.AAPL"`) {
+		t.Fatalf("expected raw replay frame to preserve original payload, got %#v", rawFrames)
+	}
+	if delay := replayFrameDelay(rawFrames, 1); delay != time.Second {
+		t.Fatalf("expected replay delay to preserve capture timing, got %s", delay)
+	}
+
+	jsonlFrames, err := replayFramesForEvents(events, replayFormatJSONL)
+	if err != nil {
+		t.Fatalf("expected jsonl replay frames: %v", err)
+	}
+	var exported streamlensExportEvent
+	if err := json.Unmarshal(jsonlFrames[0].Payload, &exported); err != nil {
+		t.Fatalf("expected jsonl replay payload: %v", err)
+	}
+	if exported.Parsed == nil || exported.Parsed.Topic != "market.AAPL" {
+		t.Fatalf("expected jsonl replay payload to carry parsed capture, got %#v", exported)
+	}
+
+	tapeFrames, err := replayFramesForEvents(events, replayFormatTape)
+	if err != nil {
+		t.Fatalf("expected tape replay frames: %v", err)
+	}
+	var tapeRecord tapeExportRecord
+	if err := json.Unmarshal(tapeFrames[0].Payload, &tapeRecord); err != nil {
+		t.Fatalf("expected tape replay payload: %v", err)
+	}
+	if tapeRecord.Type != "tick" || tapeRecord.Payload["symbol"] != "AAPL" {
+		t.Fatalf("expected tape replay tick payload, got %#v", tapeRecord)
+	}
+}
+
+func TestReplayOptionsNormalizeControls(t *testing.T) {
+	options := parseReplayOptions(url.Values{
+		"speed":  []string{"99"},
+		"loop":   []string{"true"},
+		"paused": []string{"true"},
+		"format": []string{"streamlens"},
+	})
+
+	if options.Speed != 8 || !options.Loop || !options.Paused || options.Format != replayFormatJSONL {
+		t.Fatalf("expected replay options to normalize bounds and aliases, got %#v", options)
+	}
+}
+
+func TestHandleSessionReplayRequiresWebSocketUpgrade(t *testing.T) {
+	agent := newStoredAgentForTest(t, t.TempDir())
+	agent.connectionID = "conn-test"
+	event := normalizedEnvelopeForTest("market.AAPL", "AAPL", 1)
+	event.ReceivedAt = "2026-04-25T11:00:00Z"
+	agent.recordEvent(event)
+	sessionID := agent.recorder.currentSession().ID
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/sessions/"+sessionID+"/replay", nil)
+	agent.handleSessionByID(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected websocket replay endpoint to require upgrade, got %d", response.Code)
 	}
 }
 
@@ -758,6 +1030,20 @@ func TestSessionLibraryListsOpensDeletesAndExportsSavedSessions(t *testing.T) {
 	}
 
 	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/sessions/"+firstSessionID+"/events?offset=0&limit=1", nil)
+	agent.handleSessionByID(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected session events status 200, got %d", response.Code)
+	}
+	var page captureEventPage
+	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+		t.Fatalf("expected valid session events page: %v", err)
+	}
+	if page.Total != 1 || len(page.Events) != 1 || page.Events[0].Topic != "market.AAPL" {
+		t.Fatalf("expected first session events page, got %#v", page)
+	}
+
+	response = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodGet, "/sessions/"+firstSessionID+"/export/jsonl", nil)
 	agent.handleSessionByID(response, request)
 	if response.Code != http.StatusOK {
@@ -767,7 +1053,7 @@ func TestSessionLibraryListsOpensDeletesAndExportsSavedSessions(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("expected one exported line, got %q", response.Body.String())
 	}
-	var exported wiretapExportEvent
+	var exported streamlensExportEvent
 	if err := json.Unmarshal([]byte(lines[0]), &exported); err != nil {
 		t.Fatalf("expected valid exported event: %v", err)
 	}
@@ -961,6 +1247,16 @@ func countIssueCode(issues []captureIssue, code string) int {
 	return count
 }
 
+func countEventsWithIssue(events []captureEvent, code string) int {
+	count := 0
+	for _, event := range events {
+		if countIssueCode(event.Issues, code) > 0 {
+			count++
+		}
+	}
+	return count
+}
+
 func timeNowForTest() time.Time {
 	return time.Unix(0, 0).UTC()
 }
@@ -985,7 +1281,7 @@ func newStoredAgentForTest(t *testing.T, dir string) *agent {
 		t.Fatalf("failed to load current capture session: %v", err)
 	}
 	agent := &agent{
-		id:             "wiretap-local-agent",
+		id:             "streamlens-local-agent",
 		version:        "test",
 		startedAt:      timeNowForTest(),
 		state:          stateReady,
