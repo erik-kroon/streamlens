@@ -14,7 +14,6 @@
   --ui-success: #8fd3a5;
   --ui-warning: #f6c768;
   --ui-danger: #f18f7d;
-  --traffic-light-space: 92px;
 }
 
 html,
@@ -72,10 +71,6 @@ textarea,
   -webkit-app-region: drag;
 }
 
-.titlebar-left-space {
-  padding-left: var(--traffic-light-space);
-}
-
 button,
 input,
 select,
@@ -117,11 +112,11 @@ select:disabled {
 }
 
 .field {
-  min-height: 36px;
+  min-height: 32px;
   border: 1px solid var(--ui-border);
   border-radius: 6px;
   background: color-mix(in srgb, var(--ui-raised) 78%, transparent);
-  padding: 7px 9px;
+  padding: 5px 8px;
   color: var(--ui-text);
   font-size: 13px;
   line-height: 18px;

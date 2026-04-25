@@ -20,6 +20,7 @@ import {
   Search,
   Server,
   SlidersHorizontal,
+  Square,
   Trash2,
   Upload,
   Wifi,
@@ -661,39 +662,31 @@ function App() {
     });
 
   return (
-    <main class="relative h-full min-h-0 overflow-auto bg-[var(--ui-bg)] pb-9 text-[var(--ui-text)] lg:overflow-hidden">
-      <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]">
-        <section class="titlebar-drag electrobun-webkit-app-region-drag titlebar-left-space flex h-[52px] items-center border-b border-[var(--ui-border)] bg-[var(--ui-panel)] pr-3">
-          <div class="flex w-full min-w-0 flex-wrap items-center justify-between gap-3">
-            <div class="flex min-w-0 items-center gap-3">
-              <div class="flex size-8 shrink-0 items-center justify-center rounded-md border border-[var(--ui-border-strong)] bg-[var(--ui-raised)] text-[var(--ui-accent)]">
-                <Radio size={18} />
-              </div>
-              <div class="min-w-0">
-                <h1 class="truncate text-base font-semibold tracking-normal">Wiretap</h1>
-                <p class="truncate text-xs text-[var(--ui-muted)]">{agentView.targetLabel()}</p>
-              </div>
-            </div>
+    <main class="relative h-full min-h-0 overflow-hidden bg-[var(--ui-bg)] pb-9 text-[var(--ui-text)]">
+      <div class="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden">
+        <section class="titlebar-drag electrobun-webkit-app-region-drag relative flex h-11 items-center border-b border-[var(--ui-border)] bg-[var(--ui-panel)] px-3">
+          <div class="pointer-events-none absolute inset-0 flex items-center justify-center px-44">
+            <span class="min-w-0 max-w-[56ch] truncate text-center text-sm font-medium text-[var(--ui-subtle)]">
+              {agentView.targetLabel()}
+            </span>
+          </div>
 
-            <div class="flex flex-wrap items-center gap-2">
-              <StatusPill online={agentView.isOnline()} label={agentView.statusLabel()} />
-              <IconTextButton
-                icon={Ban}
-                label="Disconnect"
-                onClick={() =>
-                  runControl(() =>
-                    agent.disconnectUpstream(
-                      streamFilter() === "all" ? streamId() : streamFilter(),
-                    ),
-                  )
-                }
-              />
-              <IconTextButton icon={Link} label="Reconnect UI" onClick={agent.reconnect} />
-            </div>
+          <div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+            <StatusPill online={agentView.isOnline()} label={agentView.statusLabel()} />
+            <IconTextButton
+              icon={Ban}
+              label="Disconnect"
+              onClick={() =>
+                runControl(() =>
+                  agent.disconnectUpstream(streamFilter() === "all" ? streamId() : streamFilter()),
+                )
+              }
+            />
+            <IconTextButton icon={Link} label="Reconnect UI" onClick={agent.reconnect} />
           </div>
         </section>
 
-        <section class="grid min-h-0 min-w-0 grid-cols-1 grid-rows-[minmax(280px,42vh)_minmax(360px,1fr)_minmax(320px,45vh)_auto] overflow-visible lg:grid-cols-[330px_minmax(0,1fr)_350px] lg:grid-rows-[minmax(0,1fr)_220px] lg:overflow-hidden">
+        <section class="grid min-h-0 min-w-0 grid-cols-1 grid-rows-[minmax(0,0.85fr)_minmax(0,1.45fr)_minmax(0,0.85fr)_minmax(0,0.7fr)] overflow-hidden lg:grid-cols-[330px_minmax(0,1fr)_350px] lg:grid-rows-[minmax(0,1fr)_220px]">
           <AgentPanel
             phase={agent.phase()}
             controlError={controlError()}
@@ -767,37 +760,63 @@ function App() {
               title="Captured Events"
               detail={`${formatCount(filteredEvents().length)} shown / ${formatCount(events().length)} retained`}
             />
-            <div class="flex min-w-0 flex-wrap items-center gap-2 border-b border-[var(--ui-border)] bg-[var(--ui-panel)] px-3 py-2">
-              <select
-                class="field h-9 w-[170px] min-w-0"
-                value={streamFilter()}
-                onInput={(event) => setStreamFilter(event.currentTarget.value)}
-              >
-                <option value="all">All streams</option>
-                <For each={streams()}>
-                  {(stream) => <option value={stream.id}>{stream.id}</option>}
-                </For>
-              </select>
-              <div class="flex h-9 min-w-[220px] flex-1 items-center gap-2 rounded-md border border-[var(--ui-border)] bg-[var(--ui-raised)] px-3 text-[var(--ui-muted)]">
-                <Search size={15} />
-                <input
-                  class="min-w-0 flex-1 bg-transparent font-mono text-sm text-[var(--ui-text)] outline-none placeholder:text-neutral-600"
-                  aria-label="Filter captured events"
-                  placeholder="Filter seq, topic, key, raw..."
-                  value={filter()}
-                  onInput={(event) => setFilter(event.currentTarget.value)}
+            <div class="grid min-w-0 gap-2 border-b border-[var(--ui-border)] bg-[var(--ui-panel)] px-3 py-2">
+              <div class="grid min-w-0 grid-cols-[minmax(120px,150px)_minmax(128px,1fr)_auto_auto] items-center gap-1.5">
+                <select
+                  class="field h-8 w-full min-w-0"
+                  value={streamFilter()}
+                  onInput={(event) => setStreamFilter(event.currentTarget.value)}
+                  aria-label="Stream filter"
+                >
+                  <option value="all">All streams</option>
+                  <For each={streams()}>
+                    {(stream) => <option value={stream.id}>{stream.id}</option>}
+                  </For>
+                </select>
+                <div class="flex h-8 min-w-0 items-center gap-2 rounded-md border border-[var(--ui-border)] bg-[var(--ui-raised)] px-2.5 text-[var(--ui-muted)]">
+                  <Search class="shrink-0" size={15} />
+                  <input
+                    class="min-w-0 flex-1 bg-transparent font-mono text-sm text-[var(--ui-text)] outline-none placeholder:text-neutral-600"
+                    aria-label="Filter captured events"
+                    placeholder="Filter seq, topic, key, raw..."
+                    value={filter()}
+                    onInput={(event) => setFilter(event.currentTarget.value)}
+                  />
+                </div>
+                <IconTextButton
+                  icon={liveFollowPaused() ? Play : Pause}
+                  label={
+                    liveFollowPaused()
+                      ? `Resume ${formatCount(bufferedSincePause())}`
+                      : "Pause follow"
+                  }
+                  onClick={liveFollowPaused() ? resumeLiveFollow : pauseLiveFollow}
+                  primary={liveFollowPaused()}
                 />
+                <div
+                  class="flex h-8 shrink-0 items-center overflow-hidden rounded-md border border-[var(--ui-border)] bg-[var(--ui-raised)]"
+                  aria-label="Capture file actions"
+                >
+                  <ToolbarIconButton
+                    icon={Download}
+                    label="Export JSONL"
+                    onClick={exportCapture}
+                    separated
+                  />
+                  <ToolbarIconButton
+                    icon={Save}
+                    label="Export Tape"
+                    onClick={exportTape}
+                    separated
+                  />
+                  <FileImportButton separated onImport={importCapture} />
+                  <ToolbarIconButton
+                    icon={Eraser}
+                    label="Clear capture"
+                    onClick={clearCapture}
+                  />
+                </div>
               </div>
-              <IconTextButton
-                icon={liveFollowPaused() ? Play : Pause}
-                label={
-                  liveFollowPaused()
-                    ? `Resume ${formatCount(bufferedSincePause())}`
-                    : "Pause follow"
-                }
-                onClick={liveFollowPaused() ? resumeLiveFollow : pauseLiveFollow}
-                primary={liveFollowPaused()}
-              />
               <Show when={replayTimeline().length > 0}>
                 <ReplayControls
                   events={replayTimeline()}
@@ -813,10 +832,6 @@ function App() {
                   onSpeedChange={setReplaySpeed}
                 />
               </Show>
-              <IconTextButton icon={Download} label="Export JSONL" onClick={exportCapture} />
-              <IconTextButton icon={Download} label="Export Tape" onClick={exportTape} />
-              <FileImportButton onImport={importCapture} />
-              <IconTextButton icon={Eraser} label="Clear" onClick={clearCapture} />
             </div>
             <VirtualEventTable
               connected={agentView.isUpstreamConnected()}
@@ -2414,7 +2429,7 @@ function IconTextButton(props: {
   return (
     <button
       type="button"
-      class={`inline-flex h-9 min-w-0 items-center justify-center gap-2 rounded-md border px-3 text-sm transition-colors active:scale-[0.98] ${
+      class={`inline-flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-md border px-2.5 text-sm transition-colors active:scale-[0.98] ${
         props.primary
           ? "border-cyan-300/38 bg-cyan-300/12 text-cyan-100 hover:bg-cyan-300/18"
           : "border-[var(--ui-border)] bg-[var(--ui-raised)] text-neutral-200 hover:border-[var(--ui-border-strong)] hover:bg-neutral-800/80"
@@ -2428,11 +2443,41 @@ function IconTextButton(props: {
   );
 }
 
-function FileImportButton(props: { onImport: (file: File) => void }) {
+function ToolbarIconButton(props: {
+  icon: Component<{ size?: number; class?: string }>;
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  separated?: boolean;
+  active?: boolean;
+}) {
+  const Icon = props.icon;
   return (
-    <label class="inline-flex h-9 min-w-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-[var(--ui-border)] bg-[var(--ui-raised)] px-3 text-sm text-neutral-200 transition-colors hover:border-[var(--ui-border-strong)] hover:bg-neutral-800/80 active:scale-[0.98]">
-      <Upload class="shrink-0" size={15} />
-      <span class="truncate">Import JSONL</span>
+    <button
+      type="button"
+      class={`inline-flex size-8 shrink-0 items-center justify-center text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100 ${
+        props.separated ? "border-r border-[var(--ui-border)]" : ""
+      } ${props.active ? "bg-cyan-300/12 text-cyan-100" : ""}`}
+      disabled={props.disabled}
+      onClick={() => props.onClick?.()}
+      title={props.label}
+      aria-label={props.label}
+    >
+      <Icon size={15} />
+    </button>
+  );
+}
+
+function FileImportButton(props: { onImport: (file: File) => void; separated?: boolean }) {
+  return (
+    <label
+      class={`inline-flex size-8 shrink-0 cursor-pointer items-center justify-center text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-50 active:scale-[0.97] ${
+        props.separated ? "border-r border-[var(--ui-border)]" : ""
+      }`}
+      title="Import JSONL"
+      aria-label="Import JSONL"
+    >
+      <Upload size={15} />
       <input
         class="sr-only"
         type="file"
@@ -2465,22 +2510,29 @@ function ReplayControls(props: {
   const cursor = () => (props.enabled ? Math.max(0, props.cursorIndex) : 0);
   const disabled = () => props.events.length === 0;
   return (
-    <div class="grid min-w-[280px] flex-1 grid-cols-[auto_auto_minmax(96px,1fr)_76px] items-center gap-2 rounded-md border border-[var(--ui-border)] bg-[var(--ui-raised)] px-2 py-1">
-      <IconTextButton
-        icon={props.enabled && props.playing ? Pause : Play}
-        label={props.enabled ? (props.playing ? "Pause replay" : "Play replay") : "Replay"}
-        onClick={props.enabled ? props.onTogglePlaying : props.onStart}
-        disabled={disabled()}
-        primary={props.enabled}
-      />
-      <button
-        type="button"
-        class="inline-flex h-8 min-w-0 items-center justify-center rounded-md border border-[var(--ui-border)] bg-[var(--ui-bg)] px-2 text-xs text-neutral-300 hover:border-[var(--ui-border-strong)] hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-45"
-        disabled={!props.enabled}
-        onClick={props.onStop}
-      >
-        Stop
-      </button>
+    <div class="grid min-w-0 grid-cols-[auto_auto_minmax(120px,1fr)_76px] items-center gap-2 rounded-md border border-[var(--ui-border)] bg-[var(--ui-raised)] px-2 py-1">
+      <div class="flex min-w-0 items-center gap-2 pr-1 text-xs text-neutral-500">
+        <span class="font-medium uppercase">Replay</span>
+        <span class="font-mono">{formatCount(props.events.length)}</span>
+      </div>
+      <div class="flex items-center overflow-hidden rounded-md border border-[var(--ui-border)] bg-[var(--ui-bg)]">
+        <ToolbarIconButton
+          icon={props.enabled && props.playing ? Pause : Play}
+          label={
+            props.enabled ? (props.playing ? "Pause replay" : "Play replay") : "Start replay"
+          }
+          onClick={props.enabled ? props.onTogglePlaying : props.onStart}
+          disabled={disabled()}
+          active={props.enabled}
+          separated
+        />
+        <ToolbarIconButton
+          icon={Square}
+          label="Stop replay"
+          disabled={!props.enabled}
+          onClick={props.onStop}
+        />
+      </div>
       <label class="grid min-w-0 grid-cols-[1fr_auto] items-center gap-2">
         <input
           class="min-w-0 accent-cyan-300"
@@ -2490,6 +2542,7 @@ function ReplayControls(props: {
           value={cursor()}
           disabled={!props.enabled || props.events.length < 2}
           onInput={(event) => props.onSeek(Number(event.currentTarget.value))}
+          aria-label="Replay position"
         />
         <span class="w-[72px] truncate text-right font-mono text-xs text-neutral-400">
           {props.enabled
@@ -2501,7 +2554,10 @@ function ReplayControls(props: {
         class="field h-8 min-h-8 w-full py-1 text-xs"
         value={props.speed}
         disabled={!props.enabled}
-        onInput={(event) => props.onSpeedChange(Number(event.currentTarget.value) as ReplaySpeed)}
+        onInput={(event) =>
+          props.onSpeedChange(Number(event.currentTarget.value) as ReplaySpeed)
+        }
+        aria-label="Replay speed"
       >
         <option value={0.25}>0.25x</option>
         <option value={0.5}>0.5x</option>
@@ -2558,9 +2614,9 @@ function EndpointRow(props: { label: string; value: string }) {
 
 function InlineIssue(props: { message: string }) {
   return (
-    <div class="flex gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">
-      <AlertTriangle class="mt-0.5 shrink-0" size={16} />
-      <span>{props.message}</span>
+    <div class="flex h-8 items-center gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-2.5 text-sm leading-5 text-amber-100">
+      <AlertTriangle class="shrink-0" size={15} />
+      <span class="min-w-0 truncate">{props.message}</span>
     </div>
   );
 }
