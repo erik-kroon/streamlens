@@ -34,6 +34,8 @@ const (
 	maxRawMessageBytes   = 1 << 20
 	rawPreviewBytes      = 16 << 10
 	reconnectDelay       = 1200 * time.Millisecond
+	staleTickInterval    = 500 * time.Millisecond
+	rateWindow           = time.Second
 	writeDeadlineTimeout = 5 * time.Second
 )
 
@@ -54,6 +56,8 @@ type agent struct {
 	nextCaptureSeq  int64
 	connectionID    string
 	events          []captureEvent
+	topics          *topicTracker
+	sequences       *sequenceTracker
 	session         *upstreamSession
 	subscribers     map[*liveClient]struct{}
 }
@@ -157,9 +161,12 @@ type wiretapEnvelope struct {
 }
 
 type captureIssue struct {
-	Code     string `json:"code"`
-	Severity string `json:"severity"`
-	Message  string `json:"message"`
+	Code     string                 `json:"code"`
+	Severity string                 `json:"severity"`
+	Message  string                 `json:"message"`
+	Topic    string                 `json:"topic,omitempty"`
+	Key      string                 `json:"key,omitempty"`
+	Details  map[string]interface{} `json:"details,omitempty"`
 }
 
 type upstreamConn struct {
@@ -184,13 +191,17 @@ func main() {
 		version:     "0.2.0",
 		startedAt:   time.Now().UTC(),
 		state:       stateReady,
+		topics:      newTopicTracker(),
+		sequences:   newSequenceTracker(),
 		subscribers: make(map[*liveClient]struct{}),
 	}
+	go agent.runStaleEvaluator(context.Background())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", agent.withCORS(agent.handleHealth))
 	mux.HandleFunc("/stats", agent.withCORS(agent.handleStats))
 	mux.HandleFunc("/events", agent.withCORS(agent.handleEvents))
+	mux.HandleFunc("/topics", agent.withCORS(agent.handleTopics))
 	mux.HandleFunc("/connect", agent.withCORS(agent.handleConnect))
 	mux.HandleFunc("/disconnect", agent.withCORS(agent.handleDisconnect))
 	mux.HandleFunc("/reconnect", agent.withCORS(agent.handleReconnect))
@@ -235,6 +246,15 @@ func (a *agent) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, a.eventSnapshot())
+}
+
+func (a *agent) handleTopics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, a.topicSnapshot())
 }
 
 func (a *agent) handleConnect(w http.ResponseWriter, r *http.Request) {
@@ -294,12 +314,15 @@ func (a *agent) handleClear(w http.ResponseWriter, r *http.Request) {
 
 	a.mu.Lock()
 	a.events = nil
+	a.topics = newTopicTracker()
 	a.eventCount = 0
 	a.issueCount = 0
 	a.nextCaptureSeq = 0
+	a.sequences = newSequenceTracker()
 	a.mu.Unlock()
 
 	a.broadcast(agentMessage{Type: "capture.snapshot", Payload: []captureEvent{}})
+	a.broadcast(agentMessage{Type: "topic.snapshot", Payload: []topicState{}})
 	a.broadcast(agentMessage{Type: "capture.stats", Payload: a.stats()})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -349,6 +372,7 @@ func (a *agent) handleLive(w http.ResponseWriter, r *http.Request) {
 	a.sendToClient(client, agentMessage{Type: "agent.ready", Payload: a.status()})
 	a.sendToClient(client, agentMessage{Type: "capture.stats", Payload: a.stats()})
 	a.sendToClient(client, agentMessage{Type: "capture.snapshot", Payload: a.eventSnapshot()})
+	a.sendToClient(client, agentMessage{Type: "topic.snapshot", Payload: a.topicSnapshot()})
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -508,7 +532,11 @@ func (a *agent) captureFrames(ctx context.Context, conn *upstreamConn) error {
 }
 
 func (a *agent) recordEvent(event captureEvent) {
+	var topic topicState
+	var hasTopic bool
+
 	a.mu.Lock()
+	a.ensureCaptureModulesLocked()
 	a.nextCaptureSeq++
 	event.CaptureSeq = a.nextCaptureSeq
 	event.ConnectionID = a.connectionID
@@ -516,6 +544,7 @@ func (a *agent) recordEvent(event captureEvent) {
 		event.ConnectionID = "conn-0"
 	}
 	event.ID = fmt.Sprintf("%s:%d", event.ConnectionID, event.CaptureSeq)
+	a.sequences.detect(&event)
 	a.eventCount++
 	a.issueCount += int64(len(event.Issues))
 	a.events = append(a.events, event)
@@ -523,10 +552,44 @@ func (a *agent) recordEvent(event captureEvent) {
 		copy(a.events, a.events[len(a.events)-maxBufferedEvents:])
 		a.events = a.events[:maxBufferedEvents]
 	}
+	topic, hasTopic = a.topics.record(event)
 	a.mu.Unlock()
 
 	a.broadcast(agentMessage{Type: "capture.event", Payload: event})
+	if hasTopic {
+		a.broadcast(agentMessage{Type: "topic.updated", Payload: topic})
+	}
 	a.broadcast(agentMessage{Type: "capture.stats", Payload: a.stats()})
+}
+
+func (a *agent) runStaleEvaluator(ctx context.Context) {
+	ticker := time.NewTicker(staleTickInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			a.evaluateStaleTopics(now.UTC())
+		}
+	}
+}
+
+func (a *agent) evaluateStaleTopics(now time.Time) []topicState {
+	a.mu.Lock()
+	a.ensureCaptureModulesLocked()
+	result := a.topics.evaluateStale(now)
+	a.issueCount += result.issueDelta
+	a.mu.Unlock()
+
+	for _, topic := range result.changed {
+		a.broadcast(agentMessage{Type: "topic.updated", Payload: topic})
+	}
+	if len(result.changed) > 0 {
+		a.broadcast(agentMessage{Type: "capture.stats", Payload: a.stats()})
+	}
+	return result.changed
 }
 
 func (a *agent) stopConnection(state agentState, lastError string) {
@@ -585,6 +648,7 @@ func (a *agent) status() agentStatus {
 			"health":     "http://localhost:8790/health",
 			"stats":      "http://localhost:8790/stats",
 			"events":     "http://localhost:8790/events",
+			"topics":     "http://localhost:8790/topics",
 			"connect":    "http://localhost:8790/connect",
 			"disconnect": "http://localhost:8790/disconnect",
 			"reconnect":  "http://localhost:8790/reconnect",
@@ -623,8 +687,25 @@ func (a *agent) eventSnapshot() []captureEvent {
 	return events
 }
 
+func (a *agent) topicSnapshot() []topicState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.ensureCaptureModulesLocked()
+	return a.topics.snapshot(time.Now().UTC())
+}
+
 func (a *agent) uptimeMs() int64 {
 	return time.Since(a.startedAt).Milliseconds()
+}
+
+func (a *agent) ensureCaptureModulesLocked() {
+	if a.topics == nil {
+		a.topics = newTopicTracker()
+	}
+	if a.sequences == nil {
+		a.sequences = newSequenceTracker()
+	}
 }
 
 func (a *agent) addSubscriber(client *liveClient) {
@@ -1068,7 +1149,28 @@ func (event *captureEvent) addIssue(code string, severity string, message string
 	})
 }
 
+func (event *captureEvent) addSequenceIssue(code string, severity string, message string, details map[string]interface{}) {
+	event.Issues = append(event.Issues, captureIssue{
+		Code:     code,
+		Severity: severity,
+		Message:  message,
+		Topic:    event.Topic,
+		Key:      event.EffectiveKey,
+		Details:  details,
+	})
+	event.addStatus(code)
+}
+
 func (event *captureEvent) addStatus(status string) {
+	if status != "ok" {
+		statuses := event.Statuses[:0]
+		for _, current := range event.Statuses {
+			if current != "ok" {
+				statuses = append(statuses, current)
+			}
+		}
+		event.Statuses = statuses
+	}
 	for _, current := range event.Statuses {
 		if current == status {
 			return

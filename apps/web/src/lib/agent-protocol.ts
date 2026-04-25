@@ -38,6 +38,9 @@ export type CaptureIssue = {
   code: string;
   severity: "info" | "warning" | "error" | string;
   message: string;
+  topic?: string;
+  key?: string;
+  details?: unknown;
 };
 
 export type WiretapEnvelope = {
@@ -78,6 +81,32 @@ export type CaptureEvent = {
   issues?: CaptureIssue[];
 };
 
+export type TopicState = {
+  id: string;
+  topic: string;
+  key?: string;
+  name: string;
+  scope: "topic" | "topicKey" | string;
+  count: number;
+  bytes: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastEventId?: string;
+  lastSeq?: number;
+  eventsPerSec: number;
+  bytesPerSec: number;
+  stale: boolean;
+  staleSince?: string;
+  staleThresholdMs?: number | null;
+  issueCount: number;
+  staleCount: number;
+  gapCount: number;
+  duplicateCount: number;
+  outOfOrderCount: number;
+  parseErrorCount: number;
+  schemaErrorCount: number;
+};
+
 export type ConnectRequest = {
   url: string;
   headers: Record<string, string>;
@@ -93,7 +122,9 @@ export type AgentToUiMessage =
   | { type: "agent.error"; payload: AgentError }
   | { type: "capture.stats"; payload: CaptureStats }
   | { type: "capture.event"; payload: CaptureEvent }
-  | { type: "capture.snapshot"; payload: CaptureEvent[] };
+  | { type: "capture.snapshot"; payload: CaptureEvent[] }
+  | { type: "topic.updated"; payload: TopicState }
+  | { type: "topic.snapshot"; payload: TopicState[] };
 
 export function isAgentToUiMessage(value: unknown): value is AgentToUiMessage {
   if (!isRecord(value) || typeof value.type !== "string" || !("payload" in value)) {
@@ -118,6 +149,14 @@ export function isAgentToUiMessage(value: unknown): value is AgentToUiMessage {
 
   if (value.type === "capture.snapshot") {
     return Array.isArray(value.payload) && value.payload.every(isCaptureEvent);
+  }
+
+  if (value.type === "topic.updated") {
+    return isTopicState(value.payload);
+  }
+
+  if (value.type === "topic.snapshot") {
+    return Array.isArray(value.payload) && value.payload.every(isTopicState);
   }
 
   return false;
@@ -158,6 +197,25 @@ function isCaptureStats(value: unknown): value is CaptureStats {
     typeof value.liveClients === "number" &&
     typeof value.uptimeMs === "number" &&
     isAgentState(value.state)
+  );
+}
+
+function isTopicState(value: unknown): value is TopicState {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.topic === "string" &&
+    typeof value.name === "string" &&
+    typeof value.scope === "string" &&
+    typeof value.count === "number" &&
+    typeof value.bytes === "number" &&
+    typeof value.firstSeenAt === "string" &&
+    typeof value.lastSeenAt === "string" &&
+    typeof value.eventsPerSec === "number" &&
+    typeof value.bytesPerSec === "number" &&
+    typeof value.stale === "boolean" &&
+    typeof value.issueCount === "number" &&
+    typeof value.staleCount === "number"
   );
 }
 

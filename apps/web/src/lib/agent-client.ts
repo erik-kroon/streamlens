@@ -5,6 +5,7 @@ import {
   type CaptureEvent,
   type CaptureStats,
   type ConnectRequest,
+  type TopicState,
   isAgentStatus,
   isAgentToUiMessage,
 } from "@/lib/agent-protocol";
@@ -19,6 +20,7 @@ export type AgentClientState = {
   status: () => AgentStatus | undefined;
   stats: () => CaptureStats | undefined;
   events: () => CaptureEvent[];
+  topics: () => TopicState[];
   phase: () => AgentClientPhase;
   lastMessageAt: () => Date | undefined;
   error: () => string | undefined;
@@ -38,6 +40,7 @@ export function createAgentClient(): AgentClientState {
   const [status, setStatus] = createSignal<AgentStatus>();
   const [stats, setStats] = createSignal<CaptureStats>();
   const [events, setEvents] = createSignal<CaptureEvent[]>([]);
+  const [topics, setTopics] = createSignal<TopicState[]>([]);
   const [phase, setPhase] = createSignal<AgentClientPhase>("connecting");
   const [lastMessageAt, setLastMessageAt] = createSignal<Date>();
   const [error, setError] = createSignal<string>();
@@ -146,6 +149,18 @@ export function createAgentClient(): AgentClientState {
           setEvents(parsed.payload);
         } else if (parsed.type === "capture.event") {
           setEvents((current) => [...current, parsed.payload].slice(-MAX_UI_EVENTS));
+        } else if (parsed.type === "topic.snapshot") {
+          setTopics(parsed.payload);
+        } else if (parsed.type === "topic.updated") {
+          setTopics((current) => {
+            const index = current.findIndex((topic) => topic.id === parsed.payload.id);
+            if (index === -1) {
+              return [...current, parsed.payload];
+            }
+            const next = current.slice();
+            next[index] = parsed.payload;
+            return next;
+          });
         }
       } catch (caught) {
         setPhase("error");
@@ -187,6 +202,7 @@ export function createAgentClient(): AgentClientState {
     status,
     stats,
     events,
+    topics,
     phase,
     lastMessageAt,
     error,
@@ -209,6 +225,7 @@ export function createAgentClient(): AgentClientState {
       setError(undefined);
       await postControl("/clear");
       setEvents([]);
+      setTopics([]);
     },
   };
 }
@@ -230,7 +247,9 @@ export function createAgentDerivedState(
       }
       return status?.state ?? "ready";
     }),
-    targetLabel: createMemo(() => client.stats()?.targetUrl ?? client.status()?.targetUrl ?? "No upstream"),
+    targetLabel: createMemo(
+      () => client.stats()?.targetUrl ?? client.status()?.targetUrl ?? "No upstream",
+    ),
   };
 }
 
