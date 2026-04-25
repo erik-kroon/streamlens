@@ -1,27 +1,25 @@
 import { createFileRoute } from "@tanstack/solid-router";
 import {
+  Activity,
   AlertTriangle,
   Ban,
+  Clock3,
   Database,
-  Download,
   Eraser,
   Link,
-  Pause,
   PlugZap,
   Radio,
   RefreshCw,
   Search,
-  ServerCog,
-  Settings,
-  TerminalSquare,
+  Server,
   Wifi,
   WifiOff,
 } from "lucide-solid";
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Component } from "solid-js";
 
 import { createAgentClient, createAgentDerivedState } from "@/lib/agent-client";
-import type { CaptureEvent, CaptureIssue, CaptureStats } from "@/lib/agent-protocol";
+import type { AgentStatus, CaptureEvent, CaptureIssue, CaptureStats } from "@/lib/agent-protocol";
 
 export const Route = createFileRoute("/")({
   component: App,
@@ -48,16 +46,30 @@ function App() {
   });
   const filteredEvents = createMemo(() => {
     const query = filter().trim().toLowerCase();
+    const captureOrdered = [...events()].sort((a, b) => a.captureSeq - b.captureSeq);
     if (query === "") {
-      return events();
+      return captureOrdered;
     }
-    return events().filter((event) =>
-      [event.captureSeq, event.displayTopic, event.topic, event.displayType, event.eventType, event.raw, event.rawBase64]
+    return captureOrdered.filter((event) =>
+      [
+        event.captureSeq,
+        event.displayTopic,
+        event.topic,
+        event.displayType,
+        event.eventType,
+        event.effectiveKey,
+        event.raw,
+        event.rawBase64,
+      ]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(query)),
     );
   });
   const topics = createMemo(() => summarizeTopics(events()));
+  const endpoints = createMemo(() => {
+    const status = agent.status();
+    return status ? Object.entries(status.endpoints) : [];
+  });
 
   const runControl = async (action: () => Promise<void>) => {
     setControlError(undefined);
@@ -85,361 +97,526 @@ function App() {
     );
 
   return (
-    <main class="wiretap-shell grid h-full min-h-0 grid-rows-[40px_1fr_26px] bg-[#0a0a0a] text-[#e5e2e1]">
-      <header class="flex items-center justify-between border-b border-[#2a2a2a] bg-[#121212] px-2">
-        <div class="flex min-w-0 items-center gap-4">
-          <span class="shrink-0 text-sm font-black tracking-normal text-[#00ff41]">WIRETAP</span>
-          <div class="hidden min-w-0 items-center gap-3 text-[11px] font-bold uppercase text-[#a0a0a0] sm:flex">
-            <span class="truncate text-[#00ff41]">{agentView.targetLabel()}</span>
-            <span class="h-3 w-px bg-[#353534]" />
-            <span>{formatCount(agent.stats()?.events ?? events().length)} EVT</span>
-            <span class="h-3 w-px bg-[#353534]" />
-            <span class={agentView.isUpstreamConnected() ? "text-[#00ff41]" : "text-[#a0a0a0]"}>
-              {agentView.statusLabel()}
-            </span>
-          </div>
-        </div>
-        <div class="flex items-center gap-1">
-          <IconButton icon={Pause} label="Pause" disabled />
-          <IconButton icon={Ban} label="Disconnect" onClick={() => runControl(agent.disconnectUpstream)} />
-          <IconButton icon={Download} label="Export" disabled />
-          <IconButton icon={Link} label="Reconnect live UI" onClick={agent.reconnect} />
-        </div>
-      </header>
-
-      <section class="grid min-h-0 grid-cols-[64px_minmax(260px,320px)_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_minmax(260px,34vh)] overflow-hidden max-lg:grid-cols-[56px_minmax(0,1fr)] max-lg:grid-rows-[auto_minmax(0,1fr)_minmax(260px,34vh)]">
-        <SideNav />
-
-        <aside class="min-h-0 border-r border-[#2a2a2a] bg-[#121212] max-lg:col-start-2 max-lg:h-[256px] max-lg:border-b">
-          <PanelTitle icon={ServerCog} title="CONNECTION" detail={agent.stats()?.state ?? agent.status()?.state ?? agent.phase()} />
-          <div class="grid gap-2 p-2">
-            <label class="grid gap-1">
-              <span class="label">TARGET URI</span>
-              <input
-                class="field font-mono"
-                value={targetUrl()}
-                onInput={(event) => setTargetUrl(event.currentTarget.value)}
-              />
-            </label>
-            <div class="grid grid-cols-2 gap-2">
-              <label class="grid gap-1">
-                <span class="label">BEARER TOKEN</span>
-                <input
-                  class="field"
-                  type="password"
-                  value={bearerToken()}
-                  onInput={(event) => setBearerToken(event.currentTarget.value)}
-                />
-              </label>
-              <label class="grid gap-1">
-                <span class="label">SUBPROTOCOLS</span>
-                <input
-                  class="field font-mono"
-                  placeholder="json, v2"
-                  value={subprotocols()}
-                  onInput={(event) => setSubprotocols(event.currentTarget.value)}
-                />
-              </label>
-            </div>
-            <div class="grid grid-cols-[1fr_1.2fr] gap-2">
-              <label class="grid gap-1">
-                <span class="label">API KEY HEADER</span>
-                <input
-                  class="field font-mono"
-                  value={apiKeyHeader()}
-                  onInput={(event) => setApiKeyHeader(event.currentTarget.value)}
-                />
-              </label>
-              <label class="grid gap-1">
-                <span class="label">API KEY</span>
-                <input
-                  class="field"
-                  type="password"
-                  value={apiKey()}
-                  onInput={(event) => setApiKey(event.currentTarget.value)}
-                />
-              </label>
-            </div>
-            <label class="grid gap-1">
-              <span class="label">CUSTOM HEADERS</span>
-              <textarea
-                class="field min-h-[54px] resize-none font-mono"
-                placeholder={"x-stream-id: demo\nx-client: wiretap"}
-                value={headersText()}
-                onInput={(event) => setHeadersText(event.currentTarget.value)}
-              />
-            </label>
-            <div class="flex items-center justify-between gap-2">
-              <label class="flex items-center gap-2 text-[11px] font-bold uppercase text-[#b9ccb2]">
-                <input
-                  class="accent-[#00ff41]"
-                  type="checkbox"
-                  checked={autoReconnect()}
-                  onInput={(event) => setAutoReconnect(event.currentTarget.checked)}
-                />
-                Auto reconnect
-              </label>
-              <div class="flex gap-1">
-                <ActionButton icon={PlugZap} label="Connect" onClick={connect} primary />
-                <ActionButton icon={RefreshCw} label="Reconnect" onClick={() => runControl(agent.reconnectUpstream)} />
+    <main class="relative h-full min-h-0 overflow-hidden bg-neutral-950 pb-9 text-neutral-100">
+      <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]">
+        <section class="border-b border-neutral-800 bg-neutral-950/95 px-4 py-3">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="flex min-w-0 items-center gap-3">
+              <div class="flex size-9 shrink-0 items-center justify-center rounded-md border border-cyan-400/35 bg-cyan-400/10 text-cyan-200">
+                <Radio size={18} />
+              </div>
+              <div class="min-w-0">
+                <h1 class="truncate text-base font-semibold tracking-normal">Wiretap</h1>
+                <p class="truncate text-xs text-neutral-400">{agentView.targetLabel()}</p>
               </div>
             </div>
-            <Show when={controlError() ?? agent.error()}>
-              {(message) => <InlineIssue message={message()} />}
-            </Show>
-          </div>
-        </aside>
 
-        <section class="grid min-h-0 grid-rows-[auto_1fr] border-r border-[#2a2a2a] bg-[#0a0a0a] max-lg:col-span-2 max-lg:col-start-1 max-lg:row-start-2">
-          <div class="flex h-8 items-center gap-2 border-b border-[#2a2a2a] bg-[#1e1e1e] px-2">
-            <span class="text-[11px] font-bold uppercase">EVENT TAPE</span>
-            <span class="status-badge ml-2">{agent.stats()?.state ?? "ready"}</span>
-            <div class="ml-auto flex h-6 min-w-[260px] items-center gap-2 border border-[#2a2a2a] bg-[#0f0f0f] px-2 text-[#555]">
-              <Search size={14} />
-              <input
-                class="min-w-0 flex-1 bg-transparent font-mono text-xs text-[#d7f5d0] outline-none"
-                placeholder="Filter seq, topic, raw..."
-                value={filter()}
-                onInput={(event) => setFilter(event.currentTarget.value)}
-              />
+            <div class="flex flex-wrap items-center gap-2">
+              <StatusPill online={agentView.isOnline()} label={agentView.statusLabel()} />
+              <IconTextButton icon={Ban} label="Disconnect" onClick={() => runControl(agent.disconnectUpstream)} />
+              <IconTextButton icon={Link} label="Reconnect UI" onClick={agent.reconnect} />
             </div>
-            <IconButton icon={Eraser} label="Clear capture" onClick={() => runControl(agent.clearCapture)} />
-          </div>
-          <div class="min-h-0 overflow-auto">
-            <div class="event-grid sticky top-0 z-10 border-b border-[#2a2a2a] bg-[#101010] text-[10px] font-semibold uppercase text-[#555]">
-              <span>SEQ</span>
-              <span>RECEIVED</span>
-              <span>TOPIC</span>
-              <span>TYPE</span>
-              <span>PAYLOAD_PREVIEW</span>
-            </div>
-            <Show
-              when={filteredEvents().length > 0}
-              fallback={<EmptyTape connected={agentView.isUpstreamConnected()} />}
-            >
-              <For each={filteredEvents()}>
-                {(event) => (
-                  <button
-                    type="button"
-                    class={`event-grid row-button ${selectedEvent()?.captureSeq === event.captureSeq ? "selected" : ""} ${
-                      event.issues?.length ? "issue-row" : ""
-                    }`}
-                    onClick={() => setSelectedSeq(event.captureSeq)}
-                  >
-                    <span class="font-mono text-[#b9ccb2]">{event.captureSeq}</span>
-                    <span class="font-mono">{formatEventTime(event.receivedAt)}</span>
-                    <span class="truncate font-mono font-semibold text-[#00ff41]">
-                      {event.displayTopic ?? event.topic ?? "unknown"}
-                    </span>
-                    <span class={event.issues?.length ? "font-mono text-[#ffb4ab]" : "font-mono text-[#ffd5ae]"}>
-                      {event.displayType ?? event.eventType ?? event.opcode}
-                    </span>
-                    <span class="truncate font-mono text-left text-[#b9ccb2]">{previewPayload(event)}</span>
-                  </button>
-                )}
-              </For>
-            </Show>
           </div>
         </section>
 
-        <aside class="grid min-h-0 grid-rows-[auto_1fr] bg-[#121212] max-lg:col-span-2 max-lg:row-start-3">
-          <PanelTitle icon={TerminalSquare} title="PAYLOAD INSPECTOR" detail={selectedEvent() ? `#${selectedEvent()?.captureSeq}` : "NO EVENT"} />
-          <Inspector event={selectedEvent()} />
-        </aside>
+        <section class="grid min-h-0 overflow-hidden grid-cols-1 grid-rows-[auto_minmax(340px,1fr)_minmax(300px,40vh)_auto] lg:grid-cols-[340px_minmax(0,1fr)_360px] lg:grid-rows-[minmax(0,1fr)_260px]">
+          <AgentPanel
+            phase={agent.phase()}
+            controlError={controlError()}
+            status={agent.status()}
+            stats={agent.stats()}
+            lastMessageAt={agent.lastMessageAt()}
+            httpUrl={agent.httpUrl}
+            liveUrl={agent.liveUrl}
+            endpoints={endpoints()}
+            targetUrl={targetUrl()}
+            setTargetUrl={setTargetUrl}
+            headersText={headersText()}
+            setHeadersText={setHeadersText}
+            bearerToken={bearerToken()}
+            setBearerToken={setBearerToken}
+            apiKeyHeader={apiKeyHeader()}
+            setApiKeyHeader={setApiKeyHeader}
+            apiKey={apiKey()}
+            setApiKey={setApiKey}
+            subprotocols={subprotocols()}
+            setSubprotocols={setSubprotocols}
+            autoReconnect={autoReconnect()}
+            setAutoReconnect={setAutoReconnect}
+            connect={connect}
+            reconnect={() => runControl(agent.reconnectUpstream)}
+          />
 
-        <section class="col-start-2 col-end-4 grid min-h-0 grid-cols-[minmax(240px,320px)_1fr] border-t border-[#2a2a2a] bg-[#0a0a0a] max-lg:hidden">
-          <div class="min-h-0 border-r border-[#2a2a2a]">
-            <PanelTitle icon={Database} title="TOPIC_HEALTH" detail={`${topics().length} scopes`} />
-            <div class="grid gap-1 p-1">
-              <For each={topics()}>
-                {(topic) => (
-                  <div class="border border-[#2a2a2a] bg-[#1a1a1a] p-2">
-                    <div class="flex items-center justify-between gap-2">
-                      <span class="truncate font-mono text-xs font-semibold">{topic.name}</span>
-                      <span class={topic.issues > 0 ? "badge-error" : "badge-live"}>
-                        {topic.issues > 0 ? `${topic.issues} ISSUE` : "LIVE"}
-                      </span>
-                    </div>
-                    <div class="mt-2 h-1 bg-[#2a2a2a]">
-                      <div class="h-full bg-[#00ff41]" style={{ width: `${Math.min(100, topic.count * 12)}%` }} />
-                    </div>
-                  </div>
-                )}
-              </For>
+          <section class="grid min-h-0 grid-rows-[auto_auto_1fr] border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:border-x lg:border-b-0">
+            <PanelHeader
+              icon={Database}
+              title="Captured Events"
+              detail={`${formatCount(filteredEvents().length)} shown / ${formatCount(events().length)} retained`}
+            />
+            <div class="flex min-w-0 flex-wrap items-center gap-2 border-b border-neutral-800 px-3 py-2">
+              <div class="flex h-9 min-w-[220px] flex-1 items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900/70 px-3 text-neutral-500">
+                <Search size={15} />
+                <input
+                  class="min-w-0 flex-1 bg-transparent font-mono text-sm text-neutral-100 outline-none placeholder:text-neutral-600"
+                  placeholder="Filter seq, topic, key, raw..."
+                  value={filter()}
+                  onInput={(event) => setFilter(event.currentTarget.value)}
+                />
+              </div>
+              <IconTextButton icon={Eraser} label="Clear" onClick={() => runControl(agent.clearCapture)} />
             </div>
-          </div>
-          <Timeline stats={agent.stats()} events={events()} />
-        </section>
-      </section>
+            <VirtualEventTable
+              connected={agentView.isUpstreamConnected()}
+              events={filteredEvents()}
+              selectedSeq={selectedEvent()?.captureSeq}
+              onSelect={setSelectedSeq}
+            />
+          </section>
 
-      <footer class="flex items-center gap-3 border-t border-[#2a2a2a] bg-[#121212] px-3 text-[11px] uppercase text-[#777]">
-        <span class={agent.phase() === "ready" ? "text-[#00ff41]" : "text-[#ffb000]"}>
-          Agent {agent.phase()}
-        </span>
-        <span>/</span>
-        <span>{agent.httpUrl}</span>
-        <span class="ml-auto">{formatTime(agent.lastMessageAt())}</span>
-      </footer>
+          <aside class="grid min-h-0 grid-rows-[auto_1fr] border-b border-neutral-800 bg-neutral-950 lg:col-start-3 lg:border-b-0">
+            <PanelHeader
+              icon={Server}
+              title="Payload Inspector"
+              detail={selectedEvent() ? `Capture #${selectedEvent()?.captureSeq}` : "No event selected"}
+            />
+            <Inspector event={selectedEvent()} />
+          </aside>
+
+          <section class="grid min-h-0 grid-cols-1 border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:col-end-4 lg:row-start-2 lg:grid-cols-[300px_minmax(0,1fr)] lg:border-l lg:border-t lg:border-b-0">
+            <TopicPanel topics={topics()} />
+            <CapturePanel stats={agent.stats()} events={events()} />
+          </section>
+        </section>
+
+        <footer class="absolute inset-x-0 bottom-0 h-9 overflow-hidden border-t border-neutral-800 bg-neutral-950 px-4">
+          <div class="flex h-full min-w-0 items-center gap-3 text-xs text-neutral-400">
+            <div class="flex shrink-0 items-center gap-2 text-emerald-300">
+              <Activity size={14} />
+              <span>Agent {agent.phase()}</span>
+            </div>
+            <span class="shrink-0 text-neutral-700">/</span>
+            <span class="min-w-0 truncate">{agent.httpUrl}</span>
+            <span class="ml-auto shrink-0">Last message {formatTime(agent.lastMessageAt())}</span>
+          </div>
+        </footer>
+      </div>
     </main>
   );
 }
 
-function SideNav() {
-  const items = [
-    { icon: Radio, label: "Streams", active: true },
-    { icon: Database, label: "Topics" },
-    { icon: AlertTriangle, label: "Alerts" },
-    { icon: Settings, label: "Settings" },
-  ];
+type AgentPanelProps = {
+  phase: string;
+  controlError: string | undefined;
+  status: AgentStatus | undefined;
+  stats: CaptureStats | undefined;
+  lastMessageAt: Date | undefined;
+  httpUrl: string;
+  liveUrl: string;
+  endpoints: [string, string][];
+  targetUrl: string;
+  setTargetUrl: (value: string) => void;
+  headersText: string;
+  setHeadersText: (value: string) => void;
+  bearerToken: string;
+  setBearerToken: (value: string) => void;
+  apiKeyHeader: string;
+  setApiKeyHeader: (value: string) => void;
+  apiKey: string;
+  setApiKey: (value: string) => void;
+  subprotocols: string;
+  setSubprotocols: (value: string) => void;
+  autoReconnect: boolean;
+  setAutoReconnect: (value: boolean) => void;
+  connect: () => void;
+  reconnect: () => void;
+};
+
+function AgentPanel(props: AgentPanelProps) {
   return (
-    <nav class="row-span-2 flex flex-col items-center gap-4 border-r border-[#2a2a2a] bg-[#121212] py-4 max-lg:row-span-3">
-      <For each={items}>
-        {(item) => {
-          const Icon = item.icon;
-          return (
-            <button
-              type="button"
-              class={`grid w-full gap-1 border-l-2 py-2 text-center ${
-                item.active
-                  ? "border-[#00ff41] bg-[#1e1e1e] text-[#00ff41]"
-                  : "border-transparent text-[#666] hover:bg-[#161616] hover:text-white"
-              }`}
-            >
-              <Icon class="mx-auto" size={19} />
-              <span class="text-[10px] font-medium uppercase">{item.label}</span>
-            </button>
-          );
-        }}
-      </For>
-    </nav>
+    <aside class="min-h-0 overflow-y-auto overflow-x-hidden border-b border-neutral-800 bg-neutral-950 lg:row-span-2 lg:border-b-0">
+      <PanelHeader icon={Wifi} title="Agent Connection" detail={props.stats?.state ?? props.status?.state ?? props.phase} />
+      <div class="space-y-3 p-3">
+        <div class="rounded-md border border-neutral-800 bg-neutral-900/70 p-3">
+          <div class="mb-3 flex min-w-0 items-center justify-between gap-3">
+            <span class="text-xs font-medium uppercase text-neutral-500">Current Status</span>
+            <StatusPill online={props.phase === "ready"} label={props.phase} compact />
+          </div>
+          <dl class="grid grid-cols-2 gap-3 text-sm">
+            <Metric label="Agent ID" value={props.status?.agentId ?? "Unavailable"} />
+            <Metric label="Version" value={props.status?.version ?? "Unknown"} />
+            <Metric label="Uptime" value={formatUptime(props.status?.uptimeMs)} />
+            <Metric label="Last message" value={formatTime(props.lastMessageAt)} />
+          </dl>
+        </div>
+
+        <Show when={props.controlError}>
+          {(message) => <InlineIssue message={message()} />}
+        </Show>
+
+        <div class="space-y-3 rounded-md border border-neutral-800 bg-neutral-900/50 p-3">
+          <div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-neutral-500">
+            <PlugZap size={13} />
+            Upstream
+          </div>
+          <Field label="Target URI" value={props.targetUrl} onInput={props.setTargetUrl} mono />
+          <div class="grid grid-cols-2 gap-2">
+            <Field label="Bearer token" value={props.bearerToken} onInput={props.setBearerToken} type="password" />
+            <Field label="Subprotocols" value={props.subprotocols} onInput={props.setSubprotocols} placeholder="json, v2" mono />
+          </div>
+          <div class="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-2">
+            <Field label="API key header" value={props.apiKeyHeader} onInput={props.setApiKeyHeader} mono />
+            <Field label="API key" value={props.apiKey} onInput={props.setApiKey} type="password" />
+          </div>
+          <label class="grid min-w-0 gap-1">
+            <span class="text-xs text-neutral-500">Custom headers</span>
+            <textarea
+              class="field min-h-[58px] w-full min-w-0 resize-none font-mono"
+              placeholder={"x-stream-id: demo\nx-client: wiretap"}
+              value={props.headersText}
+              onInput={(event) => props.setHeadersText(event.currentTarget.value)}
+            />
+          </label>
+          <div class="grid gap-2">
+            <label class="flex min-w-0 items-center gap-2 text-sm text-neutral-300">
+              <input
+                class="shrink-0 accent-cyan-300"
+                type="checkbox"
+                checked={props.autoReconnect}
+                onInput={(event) => props.setAutoReconnect(event.currentTarget.checked)}
+              />
+              <span class="truncate">Auto reconnect</span>
+            </label>
+            <div class="grid grid-cols-2 gap-2">
+              <IconTextButton icon={PlugZap} label="Connect" onClick={props.connect} primary />
+              <IconTextButton icon={RefreshCw} label="Reconnect" onClick={props.reconnect} />
+            </div>
+          </div>
+        </div>
+
+        <div class="space-y-2">
+          <div class="flex items-center gap-2 text-xs font-medium uppercase text-neutral-500">
+            <Clock3 size={13} />
+            Endpoints
+          </div>
+          <EndpointRow label="health" value={`${props.httpUrl}/health`} />
+          <EndpointRow label="live" value={props.liveUrl} />
+          <For each={props.endpoints.filter(([label]) => label !== "health" && label !== "live")}>
+            {([label, value]) => <EndpointRow label={label} value={value} />}
+          </For>
+        </div>
+      </div>
+    </aside>
   );
 }
 
-function PanelTitle(props: { icon: Component<{ size?: number; class?: string }>; title: string; detail: string }) {
-  const Icon = props.icon;
+function VirtualEventTable(props: {
+  connected: boolean;
+  events: CaptureEvent[];
+  selectedSeq: number | undefined;
+  onSelect: (captureSeq: number) => void;
+}) {
+  const rowHeight = 34;
+  const overscan = 8;
+  const [scrollTop, setScrollTop] = createSignal(0);
+  const [viewportHeight, setViewportHeight] = createSignal(0);
+  const [viewport, setViewport] = createSignal<HTMLDivElement>();
+
+  onMount(() => {
+    const element = viewport();
+    if (!element) {
+      return;
+    }
+    setViewportHeight(element.clientHeight);
+    const observer = new ResizeObserver(([entry]) => {
+      setViewportHeight(entry.contentRect.height);
+    });
+    observer.observe(element);
+    onCleanup(() => observer.disconnect());
+  });
+
+  const totalHeight = createMemo(() => props.events.length * rowHeight);
+  const visibleRange = createMemo(() => {
+    const start = Math.max(0, Math.floor(scrollTop() / rowHeight) - overscan);
+    const visibleCount = Math.ceil(viewportHeight() / rowHeight) + overscan * 2;
+    const end = Math.min(props.events.length, start + visibleCount);
+    return { start, end };
+  });
+  const visibleEvents = createMemo(() => props.events.slice(visibleRange().start, visibleRange().end));
+
   return (
-    <div class="flex h-8 items-center gap-2 border-b border-[#2a2a2a] bg-[#1e1e1e] px-2">
-      <Icon class="text-[#00ff41]" size={14} />
-      <span class="truncate text-[11px] font-bold uppercase">{props.title}</span>
-      <span class="ml-auto truncate text-[10px] font-bold uppercase text-[#00ff41]">{props.detail}</span>
+    <div class="grid min-h-0 grid-rows-[34px_1fr]">
+      <div class="event-grid border-b border-neutral-800 bg-neutral-900/70 text-xs font-medium uppercase text-neutral-500">
+        <span>Seq</span>
+        <span>Received</span>
+        <span>Topic</span>
+        <span>Type</span>
+        <span>Payload preview</span>
+      </div>
+      <Show when={props.events.length > 0} fallback={<EmptyState connected={props.connected} />}>
+        <div
+          ref={setViewport}
+          class="event-table-scroll min-h-0 overflow-auto"
+          onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+        >
+          <div class="relative min-w-[860px]" style={{ height: `${totalHeight()}px` }}>
+            <For each={visibleEvents()}>
+              {(event, index) => {
+                const eventIndex = () => visibleRange().start + index();
+                return (
+                  <button
+                    type="button"
+                    class={`event-grid row-button ${eventIndex() % 2 === 1 ? "odd-row" : ""} ${
+                      props.selectedSeq === event.captureSeq ? "selected" : ""
+                    } ${event.issues?.length ? "issue-row" : ""}`}
+                    style={{ transform: `translateY(${eventIndex() * rowHeight}px)` }}
+                    onClick={() => props.onSelect(event.captureSeq)}
+                  >
+                    <span class="font-mono text-neutral-300">{event.captureSeq}</span>
+                    <span class="font-mono text-neutral-400">{formatEventTime(event.receivedAt)}</span>
+                    <span class="truncate font-mono font-medium text-cyan-100">
+                      {event.displayTopic ?? event.topic ?? "unknown"}
+                    </span>
+                    <span class={event.issues?.length ? "truncate font-mono text-amber-200" : "truncate font-mono text-neutral-300"}>
+                      {event.displayType ?? event.eventType ?? event.opcode}
+                    </span>
+                    <span class="truncate text-left font-mono text-neutral-400">{previewPayload(event)}</span>
+                  </button>
+                );
+              }}
+            </For>
+          </div>
+        </div>
+      </Show>
     </div>
   );
 }
 
+type InspectorTab = "parsed" | "payload" | "raw" | "issues" | "metadata";
+
 function Inspector(props: { event: CaptureEvent | undefined }) {
+  const [tab, setTab] = createSignal<InspectorTab>("payload");
+  const tabs: { id: InspectorTab; label: string }[] = [
+    { id: "parsed", label: "Parsed" },
+    { id: "payload", label: "Payload" },
+    { id: "raw", label: "Raw" },
+    { id: "issues", label: "Issues" },
+    { id: "metadata", label: "Metadata" },
+  ];
+
   return (
     <Show
       when={props.event}
       fallback={
-        <div class="grid place-items-center p-6 text-center text-xs uppercase text-[#555]">
-          <div>
-            <WifiOff class="mx-auto mb-2" size={20} />
-            No event selected
-          </div>
-        </div>
+        <EmptyPanel icon={Server} title="Select an event" detail="Payload, parsed envelope, issues, and raw frame details render here." />
       }
     >
       {(event) => (
-        <div class="min-h-0 overflow-auto p-3">
-          <dl class="grid grid-cols-[88px_1fr] gap-y-2 text-xs uppercase">
-            <dt class="text-[#555]">Sequence</dt>
-            <dd class="text-right font-mono font-bold">{event().seq ?? event().captureSeq}</dd>
-            <dt class="text-[#555]">Topic</dt>
-            <dd class="truncate text-right font-mono font-bold text-[#00ff41]">
-              {event().displayTopic ?? event().topic ?? "unknown"}
-            </dd>
-            <dt class="text-[#555]">Type</dt>
-            <dd class="truncate text-right font-mono font-bold text-[#00e5ff]">
-              {event().displayType ?? event().eventType ?? event().opcode}
-            </dd>
-            <dt class="text-[#555]">Bytes</dt>
-            <dd class="text-right font-mono">{event().sizeBytes}</dd>
-          </dl>
-          <Show when={event().issues?.length}>
-            <div class="mt-3 grid gap-1">
-              <For each={event().issues}>{(issue) => <IssueBadge issue={issue} />}</For>
-            </div>
-          </Show>
-          <pre class="mt-3 min-h-[180px] overflow-auto whitespace-pre-wrap border-t border-[#2a2a2a] pt-3 font-mono text-xs leading-5 text-[#d7f5d0]">
-            {formatInspectorPayload(event())}
-          </pre>
+        <div class="grid min-h-0 grid-rows-[auto_auto_1fr]">
+          <div class="border-b border-neutral-800 p-4">
+            <dl class="grid grid-cols-[88px_1fr] gap-y-2 text-sm">
+              <dt class="text-neutral-500">Sequence</dt>
+              <dd class="truncate text-right font-mono text-neutral-100">{event().seq ?? event().captureSeq}</dd>
+              <dt class="text-neutral-500">Topic</dt>
+              <dd class="truncate text-right font-mono text-cyan-100">
+                {event().displayTopic ?? event().topic ?? "unknown"}
+              </dd>
+              <dt class="text-neutral-500">Type</dt>
+              <dd class="truncate text-right font-mono text-neutral-200">
+                {event().displayType ?? event().eventType ?? event().opcode}
+              </dd>
+              <dt class="text-neutral-500">Bytes</dt>
+              <dd class="text-right font-mono text-neutral-300">
+                {event().sizeBytes}
+                <Show when={event().rawTruncated}> / {event().originalSizeBytes}</Show>
+              </dd>
+            </dl>
+          </div>
+          <div class="flex min-w-0 gap-1 border-b border-neutral-800 bg-neutral-900/50 p-1">
+            <For each={tabs}>
+              {(item) => (
+                <button
+                  type="button"
+                  class={`inspector-tab ${tab() === item.id ? "selected" : ""}`}
+                  onClick={() => setTab(item.id)}
+                >
+                  {item.label}
+                </button>
+              )}
+            </For>
+          </div>
+          <div class="min-h-0 overflow-auto p-4">
+            <Show when={tab() === "issues"}>
+              <Show
+                when={(event().issues?.length ?? 0) > 0}
+                fallback={<div class="text-sm text-neutral-500">No issues for this event.</div>}
+              >
+                <div class="grid gap-2">
+                  <For each={event().issues}>{(issue) => <IssueBadge issue={issue} />}</For>
+                </div>
+              </Show>
+            </Show>
+            <Show when={tab() !== "issues"}>
+              <pre class="min-h-[180px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-5 text-neutral-200">
+                {formatInspectorTab(event(), tab())}
+              </pre>
+            </Show>
+          </div>
         </div>
       )}
     </Show>
   );
 }
 
-function Timeline(props: { stats: CaptureStats | undefined; events: CaptureEvent[] }) {
+function TopicPanel(props: { topics: Array<{ name: string; count: number; issues: number }> }) {
+  return (
+    <div class="min-h-0 border-b border-neutral-800 lg:border-r lg:border-b-0">
+      <PanelHeader icon={Activity} title="Topics" detail={`${props.topics.length} scopes`} />
+      <Show
+        when={props.topics.length > 0}
+        fallback={<EmptyPanel icon={Activity} title="No topics active" detail="Topic freshness and issue counts appear after capture starts." />}
+      >
+        <div class="grid gap-2 p-3">
+          <For each={props.topics}>
+            {(topic) => (
+              <div class="rounded-md border border-neutral-800 bg-neutral-900/60 p-3">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="truncate font-mono text-sm text-neutral-200">{topic.name}</span>
+                  <span class={topic.issues > 0 ? "badge-error" : "badge-live"}>
+                    {topic.issues > 0 ? `${topic.issues} issue` : "Live"}
+                  </span>
+                </div>
+                <div class="mt-3 h-1.5 rounded-full bg-neutral-800">
+                  <div class="h-full rounded-full bg-cyan-300" style={{ width: `${Math.min(100, topic.count * 12)}%` }} />
+                </div>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+function CapturePanel(props: { stats: CaptureStats | undefined; events: CaptureEvent[] }) {
   const issueCount = createMemo(() => props.events.filter((event) => event.issues?.length).length);
   return (
     <div class="grid min-h-0 grid-rows-[auto_1fr]">
-      <PanelTitle icon={Wifi} title="CAPTURE STATUS" detail={`${issueCount()} flagged`} />
-      <div class="grid grid-cols-4 gap-px bg-[#2a2a2a] p-px text-xs">
-        <Metric label="Connections" value={props.stats?.connections ?? 0} />
-        <Metric label="Events" value={props.stats?.events ?? props.events.length} />
-        <Metric label="Issues" value={props.stats?.issues ?? issueCount()} />
-        <Metric label="Clients" value={props.stats?.liveClients ?? 0} />
+      <PanelHeader icon={Wifi} title="Capture Status" detail={`${issueCount()} flagged`} />
+      <div class="grid grid-cols-2 gap-px bg-neutral-800 p-px text-sm md:grid-cols-4">
+        <MetricCard label="Connections" value={props.stats?.connections ?? 0} />
+        <MetricCard label="Events" value={props.stats?.events ?? props.events.length} />
+        <MetricCard label="Issues" value={props.stats?.issues ?? issueCount()} />
+        <MetricCard label="Clients" value={props.stats?.liveClients ?? 0} />
       </div>
     </div>
   );
 }
 
-function Metric(props: { label: string; value: string | number }) {
+function StatusPill(props: { online: boolean; label: string; compact?: boolean }) {
+  const Icon = props.online ? Wifi : WifiOff;
   return (
-    <div class="bg-[#121212] p-3">
-      <div class="label">{props.label}</div>
-      <div class="mt-2 font-mono text-lg font-semibold text-[#00ff41]">{props.value}</div>
+    <div
+      class={`inline-flex h-8 items-center gap-2 rounded-md border px-2.5 text-sm ${
+        props.online
+          ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+          : "border-neutral-700 bg-neutral-900 text-neutral-300"
+      } ${props.compact ? "h-7 text-xs" : ""}`}
+    >
+      <Icon size={props.compact ? 13 : 15} />
+      <span class="max-w-[220px] truncate">{props.label}</span>
     </div>
   );
 }
 
-function IconButton(props: {
-  icon: Component<{ size?: number; class?: string }>;
-  label: string;
-  onClick?: () => void;
-  disabled?: boolean;
-}) {
+function PanelHeader(props: { icon: Component<{ size?: number; class?: string }>; title: string; detail: string }) {
   const Icon = props.icon;
   return (
-    <button
-      type="button"
-      class="grid size-6 place-items-center text-[#a0a0a0] transition-[background-color,transform] duration-150 ease-out hover:bg-[#1e1e1e] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-35"
-      title={props.label}
-      disabled={props.disabled}
-      onClick={props.onClick}
-    >
-      <Icon size={15} />
-    </button>
+    <div class="flex h-12 items-center justify-between gap-3 border-b border-neutral-800 px-4">
+      <div class="flex min-w-0 items-center gap-2">
+        <Icon class="shrink-0 text-neutral-400" size={16} />
+        <h2 class="truncate text-sm font-medium">{props.title}</h2>
+      </div>
+      <span class="truncate text-xs text-neutral-500">{props.detail}</span>
+    </div>
   );
 }
 
-function ActionButton(props: {
+function Field(props: {
+  label: string;
+  value: string;
+  onInput: (value: string) => void;
+  placeholder?: string;
+  type?: string;
+  mono?: boolean;
+}) {
+  return (
+    <label class="grid min-w-0 gap-1">
+      <span class="truncate text-xs text-neutral-500">{props.label}</span>
+      <input
+        class={`field w-full min-w-0 ${props.mono ? "font-mono" : ""}`}
+        type={props.type ?? "text"}
+        placeholder={props.placeholder}
+        value={props.value}
+        onInput={(event) => props.onInput(event.currentTarget.value)}
+      />
+    </label>
+  );
+}
+
+function IconTextButton(props: {
   icon: Component<{ size?: number; class?: string }>;
   label: string;
-  onClick: () => void;
+  onClick?: () => void;
   primary?: boolean;
 }) {
   const Icon = props.icon;
   return (
     <button
       type="button"
-      class={`flex h-7 items-center gap-1 border px-2 text-[11px] font-bold uppercase transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] ${
+      class={`inline-flex h-9 min-w-0 items-center justify-center gap-2 rounded-md border px-3 text-sm transition-colors active:scale-[0.98] ${
         props.primary
-          ? "border-[#00ff41] bg-[#00ff41] text-[#003907]"
-          : "border-[#2a2a2a] bg-[#1e1e1e] text-[#e5e2e1] hover:border-[#555]"
+          ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100 hover:bg-cyan-300/20"
+          : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:border-neutral-500 hover:bg-neutral-800"
       }`}
       onClick={props.onClick}
     >
-      <Icon size={13} />
-      {props.label}
+      <Icon class="shrink-0" size={15} />
+      <span class="truncate">{props.label}</span>
     </button>
+  );
+}
+
+function Metric(props: { label: string; value: string }) {
+  return (
+    <div class="grid min-w-0 gap-1">
+      <dt class="text-xs text-neutral-500">{props.label}</dt>
+      <dd class="truncate font-mono text-xs text-neutral-200">{props.value}</dd>
+    </div>
+  );
+}
+
+function MetricCard(props: { label: string; value: string | number }) {
+  return (
+    <div class="bg-neutral-950 p-4">
+      <div class="text-xs font-medium uppercase text-neutral-500">{props.label}</div>
+      <div class="mt-2 font-mono text-xl font-semibold text-cyan-100">{props.value}</div>
+    </div>
+  );
+}
+
+function EndpointRow(props: { label: string; value: string }) {
+  return (
+    <div class="grid gap-1 rounded-md border border-neutral-800 bg-neutral-900/50 p-2">
+      <span class="text-xs text-neutral-500">{props.label}</span>
+      <span class="truncate font-mono text-xs text-neutral-300">{props.value}</span>
+    </div>
   );
 }
 
 function InlineIssue(props: { message: string }) {
   return (
-    <div class="flex gap-2 border border-[#ffb000] bg-[#2a2111] p-2 text-xs text-[#ffdcbd]">
-      <AlertTriangle class="shrink-0" size={14} />
+    <div class="flex gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">
+      <AlertTriangle class="mt-0.5 shrink-0" size={16} />
       <span>{props.message}</span>
     </div>
   );
@@ -447,20 +624,32 @@ function InlineIssue(props: { message: string }) {
 
 function IssueBadge(props: { issue: CaptureIssue }) {
   return (
-    <div class="border border-[#ff3131] bg-[#3a1111] px-2 py-1 text-xs text-[#ffdad6]">
-      <span class="font-bold uppercase">{props.issue.code}</span>
-      <span class="ml-2">{props.issue.message}</span>
+    <div class="rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
+      <span class="font-medium uppercase">{props.issue.code}</span>
+      <span class="ml-2 text-amber-50/80">{props.issue.message}</span>
     </div>
   );
 }
 
-function EmptyTape(props: { connected: boolean }) {
+function EmptyState(props: { connected: boolean }) {
   return (
-    <div class="grid min-h-[220px] place-items-center text-center text-xs uppercase text-[#555]">
-      <div>
-        <TerminalSquare class="mx-auto mb-2" size={22} />
-        {props.connected ? "Awaiting upstream frames" : "Connect an upstream websocket"}
+    <EmptyPanel
+      icon={Database}
+      title={props.connected ? "Awaiting upstream frames" : "No captured events yet"}
+      detail={props.connected ? "Captured WebSocket messages will render here in capture order." : "Connect an upstream WebSocket to start capturing events."}
+    />
+  );
+}
+
+function EmptyPanel(props: { icon: Component<{ size?: number; class?: string }>; title: string; detail: string }) {
+  const Icon = props.icon;
+  return (
+    <div class="flex min-h-[180px] flex-col items-center justify-center gap-2 p-6 text-center">
+      <div class="flex size-9 items-center justify-center rounded-md border border-neutral-800 bg-neutral-900 text-neutral-500">
+        <Icon size={17} />
       </div>
+      <h3 class="text-sm font-medium text-neutral-200">{props.title}</h3>
+      <p class="max-w-[300px] text-sm leading-5 text-neutral-500">{props.detail}</p>
     </div>
   );
 }
@@ -503,30 +692,39 @@ function previewPayload(event: CaptureEvent): string {
   return event.raw ?? event.rawBase64 ?? "";
 }
 
-function formatInspectorPayload(event: CaptureEvent): string {
-  const payload = {
-    envelope: event.envelope,
-    parseError: event.parseError,
-    raw: event.raw,
-    rawBase64: event.rawBase64,
-    metadata: {
-      id: event.id,
-      connectionId: event.connectionId,
-      captureSeq: event.captureSeq,
-      receivedAt: event.receivedAt,
-      direction: event.direction,
-      opcode: event.opcode,
-      originalSizeBytes: event.originalSizeBytes,
-      sizeBytes: event.sizeBytes,
-      rawTruncated: event.rawTruncated,
-      truncated: event.truncated,
-      oversized: event.oversized,
-      effectiveKey: event.effectiveKey,
-      sourceTs: event.sourceTs,
-      statuses: event.statuses,
-    },
-  };
-  return JSON.stringify(payload, null, 2);
+function formatInspectorTab(event: CaptureEvent, tab: InspectorTab): string {
+  if (tab === "parsed") {
+    return stringifyInspectorValue(event.envelope ?? { parseError: event.parseError ?? "No parsed envelope" });
+  }
+  if (tab === "payload") {
+    return stringifyInspectorValue(event.envelope?.payload ?? null);
+  }
+  if (tab === "raw") {
+    return event.raw ?? event.rawBase64 ?? "";
+  }
+  return stringifyInspectorValue({
+    id: event.id,
+    connectionId: event.connectionId,
+    captureSeq: event.captureSeq,
+    receivedAt: event.receivedAt,
+    direction: event.direction,
+    opcode: event.opcode,
+    originalSizeBytes: event.originalSizeBytes,
+    sizeBytes: event.sizeBytes,
+    rawTruncated: event.rawTruncated,
+    truncated: event.truncated,
+    oversized: event.oversized,
+    effectiveKey: event.effectiveKey,
+    sourceTs: event.sourceTs,
+    statuses: event.statuses,
+  });
+}
+
+function stringifyInspectorValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  return JSON.stringify(value, null, 2);
 }
 
 function formatEventTime(value: string): string {
@@ -538,7 +736,18 @@ function formatEventTime(value: string): string {
 }
 
 function formatTime(value: Date | undefined): string {
-  return value?.toLocaleTimeString() ?? "never";
+  return value?.toLocaleTimeString() ?? "Never";
+}
+
+function formatUptime(value: number | undefined): string {
+  if (value === undefined) {
+    return "Unavailable";
+  }
+
+  const totalSeconds = Math.floor(value / 1_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
 }
 
 function formatCount(value: number): string {

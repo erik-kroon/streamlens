@@ -236,3 +236,33 @@ Create issues in this order unless implementation priorities change:
 30. Electrobun desktop shell bundles UI and agent
 31. Native packet inspection captures low-level traffic metadata
 32. Design review for dense developer-tool ergonomics
+
+
+Phase 0: reconcile current partial implementation against issues 1-4.
+
+Phase 1, parallel:
+
+Workspace A: 1-3 hardening.
+Workspace B: 4 + 8 UI table/inspector/live-follow.
+Workspace C: 5-7 topic health and issue detection.
+Workspace D: 9 export, then 10 demo scaffolding.
+Phase 2:
+
+10 full-stack scenario completion.
+11 burst/performance.
+12 persistence.
+Phase 3, parallel after 12:
+
+13 library.
+14 import.
+17 multi-stream design/implementation, if persistence model supports it.
+20 extraction rules/plugin runtime design, if topic contracts are stable.
+Phase 4:
+
+15, 16, 18, 22, 23, 25.
+Phase 5:
+
+24, 26, 27, 28, 30, 32.
+Phase 6 HITL/platform:
+
+19, 21, 29, 31.
