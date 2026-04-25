@@ -1,0 +1,3 @@
+{
+  "extends": "@wiretap/config/tsconfig.base.json"
+}
