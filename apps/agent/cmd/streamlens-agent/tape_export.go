@@ -103,7 +103,7 @@ func tapeMetadataRecord(session captureSession, events []captureEvent) tapeExpor
 
 	sources := []tapeExportSource{}
 	if session.TargetURL != "" {
-		sources = append(sources, tapeExportSource{Path: session.TargetURL, Format: "wiretap"})
+		sources = append(sources, tapeExportSource{Path: session.TargetURL, Format: "streamlens"})
 	}
 
 	return tapeExportRecord{
@@ -114,7 +114,7 @@ func tapeMetadataRecord(session captureSession, events []captureEvent) tapeExpor
 			},
 			SymbolUniverse:      sortedStringSet(symbols),
 			EventFamilies:       sortedStringSet(families),
-			TimezoneAssumptions: []string{"Wiretap sourceTs is used when parseable; receivedAt is used otherwise"},
+			TimezoneAssumptions: []string{"StreamLens sourceTs is used when parseable; receivedAt is used otherwise"},
 		},
 	}
 }
@@ -127,7 +127,7 @@ func tapeEventRecord(event captureEvent, index int) tapeExportRecord {
 		payload = tapeBarPayload(event)
 	}
 
-	payload["wiretap"] = wiretapTapeMetadata(event)
+	payload["streamlens"] = streamlensTapeMetadata(event)
 	return tapeExportRecord{
 		Type:    eventType,
 		Payload: payload,
@@ -288,7 +288,7 @@ func stringField(values map[string]interface{}, key string) string {
 	return ""
 }
 
-func wiretapTapeMetadata(event captureEvent) map[string]interface{} {
+func streamlensTapeMetadata(event captureEvent) map[string]interface{} {
 	metadata := map[string]interface{}{
 		"captureSeq":        event.CaptureSeq,
 		"streamId":          event.StreamID,
@@ -330,7 +330,7 @@ func sortedStringSet(values map[string]struct{}) []string {
 }
 
 func exportTapeFilename(now time.Time) string {
-	return "wiretap-capture-" + now.Format("20060102T150405Z") + ".tape"
+	return "streamlens-capture-" + now.Format("20060102T150405Z") + ".tape"
 }
 
 func exportSessionTapeFilename(session captureSession) string {
@@ -338,5 +338,5 @@ func exportSessionTapeFilename(session captureSession) string {
 	if id == "" {
 		id = "session"
 	}
-	return fmt.Sprintf("wiretap-%s.tape", id)
+	return fmt.Sprintf("streamlens-%s.tape", id)
 }

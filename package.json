@@ -1,5 +1,5 @@
 {
-  "name": "wiretap",
+  "name": "streamlens",
   "private": true,
   "workspaces": {
     "packages": [
@@ -17,7 +17,7 @@
     "dev": "turbo dev",
     "build": "turbo build",
     "check-types": "turbo check-types",
-    "dev:agent": "cd apps/agent && go run ./cmd/wiretap-agent",
+    "dev:agent": "cd apps/agent && go run ./cmd/streamlens-agent",
     "dev:web": "turbo -F web dev",
     "dev:desktop": "turbo -F desktop dev:hmr",
     "build:desktop": "turbo -F desktop build:stable",
@@ -25,14 +25,14 @@
     "check": "oxlint && oxfmt --write"
   },
   "dependencies": {
-    "@wiretap/env": "workspace:*",
+    "@streamlens/env": "workspace:*",
     "dotenv": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
     "@types/three": "^0.184.0",
-    "@wiretap/config": "workspace:*",
+    "@streamlens/config": "workspace:*",
     "oxfmt": "^0.46.0",
     "oxlint": "^1.61.0",
     "turbo": "^2.8.12",

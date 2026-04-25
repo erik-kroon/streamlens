@@ -18,7 +18,7 @@ const (
 	burstBatchInterval   = 10 * time.Millisecond
 )
 
-var demoScenarios = []string{"normal", "gap", "duplicate", "out_of_order", "stale", "malformed", "oversized", "burst"}
+var demoScenarios = []string{"normal", "gap", "duplicate", "out_of_order", "stale", "malformed", "oversized", "burst", "fuzz"}
 
 type demoEnvelope struct {
 	Topic       string                 `json:"topic"`
@@ -48,7 +48,7 @@ func runDemoStreamServer(address string, logger *slog.Logger) {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	logger.Info("Wiretap demo stream listening", "websocket", "ws://"+address+"/stream", "sse", "http://"+address+"/stream")
+	logger.Info("StreamLens demo stream listening", "websocket", "ws://"+address+"/stream", "sse", "http://"+address+"/stream")
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("demo stream stopped", "error", err)
 	}
@@ -62,6 +62,20 @@ func handleDemoStream(w http.ResponseWriter, r *http.Request) {
 	if !isWebSocketUpgrade(r) {
 		handleDemoSSE(w, r)
 		return
+	}
+
+	scenario := strings.TrimSpace(r.URL.Query().Get("scenario"))
+	if scenario == "" {
+		scenario = "normal"
+	}
+	var fuzzConfig fuzzConfig
+	if scenario == "fuzz" {
+		var err error
+		fuzzConfig, err = demoFuzzConfig(r, transportWebSocket)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 
 	key := r.Header.Get("Sec-WebSocket-Key")
@@ -91,14 +105,11 @@ func handleDemoStream(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	go drainWebSocket(conn, cancel)
 
-	scenario := strings.TrimSpace(r.URL.Query().Get("scenario"))
-	if scenario == "" {
-		scenario = "normal"
-	}
-
 	switch scenario {
 	case "burst":
 		streamDemoBurst(ctx, conn)
+	case "fuzz":
+		streamDemoFuzz(ctx, conn, fuzzConfig)
 	default:
 		streamDemoScenario(ctx, conn, scenario)
 	}
@@ -111,19 +122,30 @@ func handleDemoSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scenario := strings.TrimSpace(r.URL.Query().Get("scenario"))
+	if scenario == "" {
+		scenario = "normal"
+	}
+	var fuzzConfig fuzzConfig
+	if scenario == "fuzz" {
+		var err error
+		fuzzConfig, err = demoFuzzConfig(r, transportSSE)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	scenario := strings.TrimSpace(r.URL.Query().Get("scenario"))
-	if scenario == "" {
-		scenario = "normal"
-	}
-
 	switch scenario {
 	case "burst":
 		streamDemoSSEBurst(r.Context(), w, flusher)
+	case "fuzz":
+		streamDemoSSEFuzz(r.Context(), w, flusher, fuzzConfig)
 	default:
 		streamDemoSSEScenario(r.Context(), w, flusher, scenario)
 	}
@@ -186,6 +208,48 @@ func streamDemoSSEBurst(ctx context.Context, writer io.Writer, flusher http.Flus
 			}
 		}
 	}
+}
+
+func streamDemoFuzz(ctx context.Context, conn interface{ Write([]byte) (int, error) }, config fuzzConfig) {
+	ticker := time.NewTicker(150 * time.Millisecond)
+	defer ticker.Stop()
+
+	for _, input := range generateProtocolFuzzInputs(config) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := writeWebSocketMessage(conn, input.Opcode, input.Payload); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func streamDemoSSEFuzz(ctx context.Context, writer io.Writer, flusher http.Flusher, config fuzzConfig) {
+	ticker := time.NewTicker(150 * time.Millisecond)
+	defer ticker.Stop()
+
+	for index, input := range generateProtocolFuzzInputs(config) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := writeSSEData(writer, "fuzz", fmt.Sprintf("%s-%d", input.Name, index+1), input.Payload); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func demoFuzzConfig(r *http.Request, transport string) (fuzzConfig, error) {
+	values := r.URL.Query()
+	values.Set("transport", transport)
+	if values.Get("count") == "" {
+		values.Set("count", "24")
+	}
+	return fuzzConfigFromQuery(values)
 }
 
 func streamDemoScenario(ctx context.Context, conn interface{ Write([]byte) (int, error) }, scenario string) {
@@ -332,7 +396,7 @@ func demoEventPayload(scenario string, seq int64, at time.Time) []byte {
 		Symbol:      symbol,
 		Traceparent: demoTraceparent(seq),
 		Resource: map[string]interface{}{
-			"service": map[string]interface{}{"name": "wiretap-demo"},
+			"service": map[string]interface{}{"name": "streamlens-demo"},
 		},
 		Payload: map[string]interface{}{
 			"bid":      180 + float64(seq%100)/100,

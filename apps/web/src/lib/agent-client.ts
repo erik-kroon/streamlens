@@ -2,6 +2,7 @@ import { createMemo, createSignal, onCleanup, onMount } from "solid-js";
 
 import {
   type AgentStatus,
+  type CaptureEventPage,
   type CaptureEvent,
   type CaptureSession,
   type CaptureStats,
@@ -44,12 +45,13 @@ export type AgentClientState = {
   deleteSession: (sessionId: string) => Promise<void>;
   exportSessionJSONL: (sessionId: string) => Promise<void>;
   exportSessionTape: (sessionId: string) => Promise<void>;
+  readSessionEvents: (sessionId: string) => Promise<CaptureEvent[]>;
   readExtractionRules: () => Promise<ExtractionRules>;
   saveExtractionRules: (rules: ExtractionRules) => Promise<ExtractionRules>;
 };
 
 export function createAgentClient(): AgentClientState {
-  const httpUrl = normalizeHttpUrl(import.meta.env.VITE_WIRETAP_AGENT_URL);
+  const httpUrl = normalizeHttpUrl(import.meta.env.VITE_STREAMLENS_AGENT_URL);
   const liveUrl = `${httpUrl.replace(/^http/, "ws")}/live`;
 
   const [status, setStatus] = createSignal<AgentStatus>();
@@ -214,6 +216,40 @@ export function createAgentClient(): AgentClientState {
           : `import returned ${response.status}`;
       throw new Error(message);
     }
+  };
+
+  const readSessionEvents = async (sessionId: string) => {
+    const limit = 1_000;
+    let offset = 0;
+    let total = Number.POSITIVE_INFINITY;
+    const events: CaptureEvent[] = [];
+
+    while (offset < total) {
+      const response = await fetch(
+        `${httpUrl}/sessions/${encodeURIComponent(sessionId)}/events?offset=${offset}&limit=${limit}`,
+      );
+      if (!response.ok) {
+        const payload: unknown = await response.json().catch(() => undefined);
+        const message =
+          payload && typeof payload === "object" && "message" in payload
+            ? String((payload as { message: unknown }).message)
+            : `session events returned ${response.status}`;
+        throw new Error(message);
+      }
+
+      const page = (await response.json()) as CaptureEventPage;
+      if (!Array.isArray(page.events) || typeof page.total !== "number") {
+        throw new Error("session events returned an invalid event page");
+      }
+      events.push(...page.events);
+      total = page.total;
+      offset += page.events.length;
+      if (page.events.length === 0) {
+        break;
+      }
+    }
+
+    return events;
   };
 
   const readExtractionRules = async () => {
@@ -421,6 +457,7 @@ export function createAgentClient(): AgentClientState {
         exportFilename(sessionId, "tape"),
       );
     },
+    readSessionEvents,
     readExtractionRules,
     saveExtractionRules,
   };
@@ -459,7 +496,7 @@ function normalizeHttpUrl(value: unknown): string {
 
 function exportFilename(label: string, extension: "jsonl" | "tape"): string {
   const safeLabel = label.replace(/[^a-zA-Z0-9_-]/g, "-");
-  return `wiretap-${safeLabel}-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
+  return `streamlens-${safeLabel}-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
 }
 
 function streamControlPath(path: string, streamId: string | undefined): string {

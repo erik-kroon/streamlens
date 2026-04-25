@@ -22,7 +22,7 @@ async function getMainViewUrl(): Promise<string> {
 const url = await getMainViewUrl();
 
 new BrowserWindow({
-  title: "wiretap",
+  title: "streamlens",
   url,
   frame: {
     width: 1280,

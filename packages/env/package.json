@@ -1,5 +1,5 @@
 {
-  "name": "@wiretap/env",
+  "name": "@streamlens/env",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@wiretap/config": "workspace:*",
+    "@streamlens/config": "workspace:*",
     "typescript": "catalog:"
   }
 }
