@@ -693,7 +693,7 @@ function App() {
           </div>
         </section>
 
-        <section class="grid min-h-0 min-w-0 grid-cols-1 grid-rows-[minmax(0,0.85fr)_minmax(0,1.45fr)_minmax(0,0.85fr)_minmax(0,0.7fr)] overflow-hidden lg:grid-cols-[330px_minmax(0,1fr)_350px] lg:grid-rows-[minmax(0,1fr)_220px]">
+        <section class="grid min-h-0 min-w-0 grid-cols-1 grid-rows-[minmax(0,0.85fr)_minmax(0,1.45fr)_minmax(0,0.85fr)_minmax(0,0.8fr)] overflow-hidden lg:grid-cols-[330px_minmax(0,1fr)_350px] lg:grid-rows-[minmax(0,1fr)_260px]">
           <AgentPanel
             phase={agent.phase()}
             controlError={controlError()}
