@@ -31,6 +31,7 @@ export type AgentClientState = {
   disconnectUpstream: () => Promise<void>;
   reconnectUpstream: () => Promise<void>;
   clearCapture: () => Promise<void>;
+  exportJSONL: () => Promise<void>;
 };
 
 export function createAgentClient(): AgentClientState {
@@ -47,6 +48,8 @@ export function createAgentClient(): AgentClientState {
 
   let socket: WebSocket | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let eventFlushFrame: number | undefined;
+  let queuedEvents: CaptureEvent[] = [];
   let disposed = false;
 
   const clearReconnectTimer = () => {
@@ -59,6 +62,31 @@ export function createAgentClient(): AgentClientState {
   const closeSocket = () => {
     socket?.close();
     socket = undefined;
+  };
+
+  const cancelEventFlush = () => {
+    if (eventFlushFrame !== undefined) {
+      window.cancelAnimationFrame(eventFlushFrame);
+      eventFlushFrame = undefined;
+    }
+  };
+
+  const flushQueuedEvents = () => {
+    eventFlushFrame = undefined;
+    if (queuedEvents.length === 0) {
+      return;
+    }
+
+    const nextEvents = queuedEvents;
+    queuedEvents = [];
+    setEvents((current) => [...current, ...nextEvents].slice(-MAX_UI_EVENTS));
+  };
+
+  const enqueueEvent = (event: CaptureEvent) => {
+    queuedEvents.push(event);
+    if (eventFlushFrame === undefined) {
+      eventFlushFrame = window.requestAnimationFrame(flushQueuedEvents);
+    }
   };
 
   const scheduleReconnect = () => {
@@ -108,6 +136,28 @@ export function createAgentClient(): AgentClientState {
     }
   };
 
+  const downloadJSONL = async () => {
+    const response = await fetch(`${httpUrl}/export/jsonl`);
+    if (!response.ok) {
+      const payload: unknown = await response.json().catch(() => undefined);
+      const message =
+        payload && typeof payload === "object" && "message" in payload
+          ? String((payload as { message: unknown }).message)
+          : `export returned ${response.status}`;
+      throw new Error(message);
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = exportFilename();
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
   function connect() {
     clearReconnectTimer();
     closeSocket();
@@ -146,9 +196,11 @@ export function createAgentClient(): AgentClientState {
         } else if (parsed.type === "capture.stats") {
           setStats(parsed.payload);
         } else if (parsed.type === "capture.snapshot") {
+          queuedEvents = [];
+          cancelEventFlush();
           setEvents(parsed.payload);
         } else if (parsed.type === "capture.event") {
-          setEvents((current) => [...current, parsed.payload].slice(-MAX_UI_EVENTS));
+          enqueueEvent(parsed.payload);
         } else if (parsed.type === "topic.snapshot") {
           setTopics(parsed.payload);
         } else if (parsed.type === "topic.updated") {
@@ -195,6 +247,8 @@ export function createAgentClient(): AgentClientState {
   onCleanup(() => {
     disposed = true;
     clearReconnectTimer();
+    queuedEvents = [];
+    cancelEventFlush();
     closeSocket();
   });
 
@@ -226,6 +280,10 @@ export function createAgentClient(): AgentClientState {
       await postControl("/clear");
       setEvents([]);
       setTopics([]);
+    },
+    exportJSONL: async () => {
+      setError(undefined);
+      await downloadJSONL();
     },
   };
 }
@@ -259,4 +317,8 @@ function normalizeHttpUrl(value: unknown): string {
   }
 
   return value.replace(/\/$/, "");
+}
+
+function exportFilename(): string {
+  return `wiretap-capture-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`;
 }
