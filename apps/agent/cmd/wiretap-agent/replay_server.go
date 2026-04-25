@@ -144,7 +144,7 @@ func normalizeReplayFormat(format string) string {
 	switch strings.ToLower(strings.TrimSpace(format)) {
 	case "", replayFormatRaw:
 		return replayFormatRaw
-	case replayFormatJSONL, "streamlens":
+	case replayFormatJSONL, "wiretap":
 		return replayFormatJSONL
 	case replayFormatTape:
 		return replayFormatTape

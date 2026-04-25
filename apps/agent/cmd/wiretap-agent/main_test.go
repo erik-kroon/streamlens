@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func TestNormalizeCaptureParsesStreamLensEnvelope(t *testing.T) {
+func TestNormalizeCaptureParsesWiretapEnvelope(t *testing.T) {
 	event := normalizeCapture(upstreamFrame{
 		opcode:    0x1,
 		payload:   []byte(`{"topic":"market.AAPL","type":"trade_print","seq":42,"ts":"2026-04-25T11:00:00Z","symbol":"AAPL","payload":{"price":150.26}}`),
@@ -232,7 +232,7 @@ func TestConnectRequestSupportsSSETransport(t *testing.T) {
 		StreamID:  "quotes",
 		Transport: "sse",
 		URL:       "http://example.test/events",
-		Headers:   map[string]string{" x-client ": " streamlens "},
+		Headers:   map[string]string{" x-client ": " wiretap "},
 	}
 
 	if err := request.validate(); err != nil {
@@ -241,7 +241,7 @@ func TestConnectRequestSupportsSSETransport(t *testing.T) {
 	if request.Transport != transportSSE {
 		t.Fatalf("expected normalized sse transport, got %q", request.Transport)
 	}
-	if request.Headers["x-client"] != "streamlens" {
+	if request.Headers["x-client"] != "wiretap" {
 		t.Fatalf("expected headers to be trimmed, got %#v", request.Headers)
 	}
 }
@@ -586,7 +586,7 @@ func TestHandleFuzzFixturesWritesImportableJSONL(t *testing.T) {
 	if contentType := response.Header().Get("Content-Type"); contentType != "application/x-ndjson" {
 		t.Fatalf("expected jsonl content type, got %q", contentType)
 	}
-	if disposition := response.Header().Get("Content-Disposition"); !strings.Contains(disposition, "streamlens-fuzz-mixed-seed-77.jsonl") {
+	if disposition := response.Header().Get("Content-Disposition"); !strings.Contains(disposition, "wiretap-fuzz-mixed-seed-77.jsonl") {
 		t.Fatalf("expected fuzz fixture filename, got %q", disposition)
 	}
 
@@ -595,7 +595,7 @@ func TestHandleFuzzFixturesWritesImportableJSONL(t *testing.T) {
 		t.Fatalf("expected six fixture events, got %d: %q", len(lines), response.Body.String())
 	}
 	for _, line := range lines {
-		var exported streamlensExportEvent
+		var exported wiretapExportEvent
 		if err := json.Unmarshal([]byte(line), &exported); err != nil {
 			t.Fatalf("expected valid exported fuzz event: %v", err)
 		}
@@ -672,7 +672,7 @@ func TestHandleExportJSONLWritesOneJSONEventPerLine(t *testing.T) {
 		t.Fatalf("expected one jsonl line, got %d: %q", len(lines), response.Body.String())
 	}
 
-	var exported streamlensExportEvent
+	var exported wiretapExportEvent
 	if err := json.Unmarshal([]byte(lines[0]), &exported); err != nil {
 		t.Fatalf("expected valid json line: %v", err)
 	}
@@ -733,9 +733,9 @@ func TestHandleExportTapeWritesTapeCompatibleSession(t *testing.T) {
 	if record.Payload["seq"] != float64(7) {
 		t.Fatalf("expected tape payload seq 7, got %#v", record.Payload["seq"])
 	}
-	streamlens, ok := record.Payload["streamlens"].(map[string]interface{})
-	if !ok || streamlens["captureSeq"] != float64(1) || streamlens["raw"] == "" {
-		t.Fatalf("expected streamlens metadata to be preserved, got %#v", record.Payload["streamlens"])
+	wiretap, ok := record.Payload["wiretap"].(map[string]interface{})
+	if !ok || wiretap["captureSeq"] != float64(1) || wiretap["raw"] == "" {
+		t.Fatalf("expected wiretap metadata to be preserved, got %#v", record.Payload["wiretap"])
 	}
 }
 
@@ -761,7 +761,7 @@ func TestReplayFramesServeRawJSONLAndTapePayloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected jsonl replay frames: %v", err)
 	}
-	var exported streamlensExportEvent
+	var exported wiretapExportEvent
 	if err := json.Unmarshal(jsonlFrames[0].Payload, &exported); err != nil {
 		t.Fatalf("expected jsonl replay payload: %v", err)
 	}
@@ -787,7 +787,7 @@ func TestReplayOptionsNormalizeControls(t *testing.T) {
 		"speed":  []string{"99"},
 		"loop":   []string{"true"},
 		"paused": []string{"true"},
-		"format": []string{"streamlens"},
+		"format": []string{"wiretap"},
 	})
 
 	if options.Speed != 8 || !options.Loop || !options.Paused || options.Format != replayFormatJSONL {
@@ -1053,7 +1053,7 @@ func TestSessionLibraryListsOpensDeletesAndExportsSavedSessions(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("expected one exported line, got %q", response.Body.String())
 	}
-	var exported streamlensExportEvent
+	var exported wiretapExportEvent
 	if err := json.Unmarshal([]byte(lines[0]), &exported); err != nil {
 		t.Fatalf("expected valid exported event: %v", err)
 	}
@@ -1281,7 +1281,7 @@ func newStoredAgentForTest(t *testing.T, dir string) *agent {
 		t.Fatalf("failed to load current capture session: %v", err)
 	}
 	agent := &agent{
-		id:             "streamlens-local-agent",
+		id:             "wiretap-local-agent",
 		version:        "test",
 		startedAt:      timeNowForTest(),
 		state:          stateReady,

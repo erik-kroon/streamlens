@@ -103,7 +103,7 @@ func tapeMetadataRecord(session captureSession, events []captureEvent) tapeExpor
 
 	sources := []tapeExportSource{}
 	if session.TargetURL != "" {
-		sources = append(sources, tapeExportSource{Path: session.TargetURL, Format: "streamlens"})
+		sources = append(sources, tapeExportSource{Path: session.TargetURL, Format: "wiretap"})
 	}
 
 	return tapeExportRecord{
@@ -114,7 +114,7 @@ func tapeMetadataRecord(session captureSession, events []captureEvent) tapeExpor
 			},
 			SymbolUniverse:      sortedStringSet(symbols),
 			EventFamilies:       sortedStringSet(families),
-			TimezoneAssumptions: []string{"StreamLens sourceTs is used when parseable; receivedAt is used otherwise"},
+			TimezoneAssumptions: []string{"Wiretap sourceTs is used when parseable; receivedAt is used otherwise"},
 		},
 	}
 }
@@ -127,7 +127,7 @@ func tapeEventRecord(event captureEvent, index int) tapeExportRecord {
 		payload = tapeBarPayload(event)
 	}
 
-	payload["streamlens"] = streamlensTapeMetadata(event)
+	payload["wiretap"] = wiretapTapeMetadata(event)
 	return tapeExportRecord{
 		Type:    eventType,
 		Payload: payload,
@@ -288,7 +288,7 @@ func stringField(values map[string]interface{}, key string) string {
 	return ""
 }
 
-func streamlensTapeMetadata(event captureEvent) map[string]interface{} {
+func wiretapTapeMetadata(event captureEvent) map[string]interface{} {
 	metadata := map[string]interface{}{
 		"captureSeq":        event.CaptureSeq,
 		"streamId":          event.StreamID,
@@ -330,7 +330,7 @@ func sortedStringSet(values map[string]struct{}) []string {
 }
 
 func exportTapeFilename(now time.Time) string {
-	return "streamlens-capture-" + now.Format("20060102T150405Z") + ".tape"
+	return "wiretap-capture-" + now.Format("20060102T150405Z") + ".tape"
 }
 
 func exportSessionTapeFilename(session captureSession) string {
@@ -338,5 +338,5 @@ func exportSessionTapeFilename(session captureSession) string {
 	if id == "" {
 		id = "session"
 	}
-	return fmt.Sprintf("streamlens-%s.tape", id)
+	return fmt.Sprintf("wiretap-%s.tape", id)
 }

@@ -174,13 +174,13 @@ func mutateFaultFrame(frame upstreamFrame) upstreamFrame {
 	decoder.UseNumber()
 	var parsed interface{}
 	if err := decoder.Decode(&parsed); err != nil {
-		frame.payload = append(copyBytes(frame.payload), []byte(`__streamlens_fault_mutation__`)...)
+		frame.payload = append(copyBytes(frame.payload), []byte(`__wiretap_fault_mutation__`)...)
 		frame.sizeBytes = int64(len(frame.payload))
 		return tagFaultFrame(frame, "mutate")
 	}
 	var extra interface{}
 	if err := decoder.Decode(&extra); err != io.EOF {
-		frame.payload = append(copyBytes(frame.payload), []byte(`__streamlens_fault_mutation__`)...)
+		frame.payload = append(copyBytes(frame.payload), []byte(`__wiretap_fault_mutation__`)...)
 		frame.sizeBytes = int64(len(frame.payload))
 		return tagFaultFrame(frame, "mutate")
 	}
@@ -192,9 +192,9 @@ func mutateFaultFrame(frame upstreamFrame) upstreamFrame {
 	if seq, ok := numericJSONValue(object["seq"]); ok {
 		object["seq"] = seq + 1000
 	} else if payload, ok := object["payload"].(map[string]interface{}); ok {
-		payload["streamlensFault"] = "mutated"
+		payload["wiretapFault"] = "mutated"
 	} else {
-		object["streamlensFault"] = "mutated"
+		object["wiretapFault"] = "mutated"
 	}
 
 	payload, err := json.Marshal(object)

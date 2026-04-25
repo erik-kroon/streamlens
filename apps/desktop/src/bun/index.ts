@@ -45,7 +45,7 @@ const agent = await startAgent();
 const url = await getMainViewUrl(agent);
 
 const window = new BrowserWindow({
-  title: "streamlens",
+  title: "wiretap",
   url,
   frame: {
     width: 1280,
@@ -72,7 +72,7 @@ async function startAgent(): Promise<DesktopAgent> {
   await mkdir(dataDir, { recursive: true });
 
   const command = resolveAgentCommand();
-  console.log(`Starting StreamLens agent from ${command.label}.`);
+  console.log(`Starting Wiretap agent from ${command.label}.`);
 
   const child = Bun.spawn(
     [
@@ -88,16 +88,16 @@ async function startAgent(): Promise<DesktopAgent> {
       cwd: command.cwd,
       env: {
         ...process.env,
-        STREAMLENS_DATA_DIR: dataDir,
+        WIRETAP_DATA_DIR: dataDir,
       },
       stdin: "ignore",
       stdout: "inherit",
       stderr: "inherit",
       onExit: (_process, exitCode, signalCode, error) => {
         if (error) {
-          console.error("StreamLens agent failed:", error);
+          console.error("Wiretap agent failed:", error);
         } else if (exitCode !== 0) {
-          console.error(`StreamLens agent exited with code ${exitCode} signal ${signalCode ?? ""}`);
+          console.error(`Wiretap agent exited with code ${exitCode} signal ${signalCode ?? ""}`);
         }
       },
     },
@@ -123,12 +123,12 @@ function stopAgent(agent: DesktopAgent, reason: string) {
     return;
   }
 
-  console.log(`Stopping StreamLens agent: ${reason}.`);
+  console.log(`Stopping Wiretap agent: ${reason}.`);
   agent.process.kill();
 }
 
 function resolveAgentCommand(): { argv: string[]; cwd?: string; label: string } {
-  const binaryName = process.platform === "win32" ? "streamlens-agent.exe" : "streamlens-agent";
+  const binaryName = process.platform === "win32" ? "wiretap-agent.exe" : "wiretap-agent";
   const bundledAgentPath = resolve(PATHS.VIEWS_FOLDER, "..", "agent", binaryName);
   if (existsSync(bundledAgentPath)) {
     return { argv: [bundledAgentPath], label: bundledAgentPath };
@@ -142,28 +142,28 @@ function resolveAgentCommand(): { argv: string[]; cwd?: string; label: string } 
   const sourceAgentDir = resolve(import.meta.dir, "..", "..", "..", "agent");
   if (existsSync(resolve(sourceAgentDir, "go.mod"))) {
     return {
-      argv: ["go", "run", "./cmd/streamlens-agent"],
+      argv: ["go", "run", "./cmd/wiretap-agent"],
       cwd: sourceAgentDir,
       label: `${sourceAgentDir} via go run`,
     };
   }
 
-  throw new Error("Unable to locate the bundled StreamLens agent.");
+  throw new Error("Unable to locate the bundled Wiretap agent.");
 }
 
 function resolveDataDir(): string {
-  const envDataDir = process.env.STREAMLENS_DATA_DIR?.trim();
+  const envDataDir = process.env.WIRETAP_DATA_DIR?.trim();
   if (envDataDir) {
     return resolve(envDataDir);
   }
 
   if (process.platform === "darwin") {
-    return resolve(homedir(), "Library", "Application Support", "StreamLens");
+    return resolve(homedir(), "Library", "Application Support", "Wiretap");
   }
   if (process.platform === "win32") {
-    return resolve(process.env.APPDATA ?? homedir(), "StreamLens");
+    return resolve(process.env.APPDATA ?? homedir(), "Wiretap");
   }
-  return resolve(process.env.XDG_DATA_HOME ?? resolve(homedir(), ".local", "share"), "streamlens");
+  return resolve(process.env.XDG_DATA_HOME ?? resolve(homedir(), ".local", "share"), "wiretap");
 }
 
 async function findAvailablePort(preferredPort: number, reservedPort?: number): Promise<number> {
@@ -222,5 +222,5 @@ async function waitForAgentHealth(httpUrl: string): Promise<void> {
     await Bun.sleep(100);
   }
 
-  throw new Error(`StreamLens agent did not become healthy at ${httpUrl}`);
+  throw new Error(`Wiretap agent did not become healthy at ${httpUrl}`);
 }

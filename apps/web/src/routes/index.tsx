@@ -153,7 +153,7 @@ const defaultExtractionRules: ExtractionRules = {
   sandboxBoundary: "declarative-json-rules-only",
 };
 
-const RECENT_TARGETS_KEY = "streamlens.recentTargets";
+const RECENT_TARGETS_KEY = "wiretap.recentTargets";
 const MAX_RECENT_TARGETS = 8;
 
 function App() {
@@ -657,7 +657,7 @@ function App() {
                 <Radio size={18} />
               </div>
               <div class="min-w-0">
-                <h1 class="truncate text-base font-semibold tracking-normal">StreamLens</h1>
+                <h1 class="truncate text-base font-semibold tracking-normal">Wiretap</h1>
                 <p class="truncate text-xs text-neutral-400">{agentView.targetLabel()}</p>
               </div>
             </div>
@@ -1055,7 +1055,7 @@ function AgentPanel(props: AgentPanelProps) {
             <span class="text-xs text-neutral-500">Custom headers</span>
             <textarea
               class="field min-h-[58px] w-full min-w-0 resize-none font-mono"
-              placeholder={"x-stream-id: demo\nx-client: streamlens"}
+              placeholder={"x-stream-id: demo\nx-client: wiretap"}
               value={props.headersText}
               onInput={(event) => props.setHeadersText(event.currentTarget.value)}
             />

@@ -48,7 +48,7 @@ func runDemoStreamServer(address string, logger *slog.Logger) {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	logger.Info("StreamLens demo stream listening", "websocket", "ws://"+address+"/stream", "sse", "http://"+address+"/stream")
+	logger.Info("Wiretap demo stream listening", "websocket", "ws://"+address+"/stream", "sse", "http://"+address+"/stream")
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("demo stream stopped", "error", err)
 	}
@@ -396,7 +396,7 @@ func demoEventPayload(scenario string, seq int64, at time.Time) []byte {
 		Symbol:      symbol,
 		Traceparent: demoTraceparent(seq),
 		Resource: map[string]interface{}{
-			"service": map[string]interface{}{"name": "streamlens-demo"},
+			"service": map[string]interface{}{"name": "wiretap-demo"},
 		},
 		Payload: map[string]interface{}{
 			"bid":      180 + float64(seq%100)/100,

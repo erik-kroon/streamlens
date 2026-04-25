@@ -1,3 +1,3 @@
-module streamlens/apps/agent
+module wiretap/apps/agent
 
 go 1.24

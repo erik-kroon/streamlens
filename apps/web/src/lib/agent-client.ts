@@ -492,7 +492,7 @@ function configuredAgentHttpUrl(): string | undefined {
     return queryValue;
   }
 
-  return import.meta.env.VITE_STREAMLENS_AGENT_URL;
+  return import.meta.env.VITE_WIRETAP_AGENT_URL;
 }
 
 function normalizeHttpUrl(value: unknown): string {
@@ -514,7 +514,7 @@ function runtimeQueryValue(name: string): string | undefined {
 
 function exportFilename(label: string, extension: "jsonl" | "tape"): string {
   const safeLabel = label.replace(/[^a-zA-Z0-9_-]/g, "-");
-  return `streamlens-${safeLabel}-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
+  return `wiretap-${safeLabel}-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
 }
 
 function streamControlPath(path: string, streamId: string | undefined): string {
