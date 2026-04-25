@@ -1,20 +1,34 @@
 import { createMemo, createSignal, onCleanup, onMount } from "solid-js";
 
-import { type AgentStatus, isAgentStatus, isAgentToUiMessage } from "@/lib/agent-protocol";
+import {
+  type AgentStatus,
+  type CaptureEvent,
+  type CaptureStats,
+  type ConnectRequest,
+  isAgentStatus,
+  isAgentToUiMessage,
+} from "@/lib/agent-protocol";
 
 const DEFAULT_AGENT_HTTP_URL = "http://localhost:8790";
 const RECONNECT_DELAY_MS = 1_500;
+const MAX_UI_EVENTS = 10_000;
 
 export type AgentClientPhase = "connecting" | "ready" | "disconnected" | "error";
 
 export type AgentClientState = {
   status: () => AgentStatus | undefined;
+  stats: () => CaptureStats | undefined;
+  events: () => CaptureEvent[];
   phase: () => AgentClientPhase;
   lastMessageAt: () => Date | undefined;
   error: () => string | undefined;
   httpUrl: string;
   liveUrl: string;
   reconnect: () => void;
+  connectUpstream: (request: ConnectRequest) => Promise<void>;
+  disconnectUpstream: () => Promise<void>;
+  reconnectUpstream: () => Promise<void>;
+  clearCapture: () => Promise<void>;
 };
 
 export function createAgentClient(): AgentClientState {
@@ -22,6 +36,8 @@ export function createAgentClient(): AgentClientState {
   const liveUrl = `${httpUrl.replace(/^http/, "ws")}/live`;
 
   const [status, setStatus] = createSignal<AgentStatus>();
+  const [stats, setStats] = createSignal<CaptureStats>();
+  const [events, setEvents] = createSignal<CaptureEvent[]>([]);
   const [phase, setPhase] = createSignal<AgentClientPhase>("connecting");
   const [lastMessageAt, setLastMessageAt] = createSignal<Date>();
   const [error, setError] = createSignal<string>();
@@ -72,6 +88,23 @@ export function createAgentClient(): AgentClientState {
     }
   };
 
+  const postControl = async (path: string, body?: unknown) => {
+    const response = await fetch(`${httpUrl}${path}`, {
+      method: "POST",
+      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const payload: unknown = await response.json().catch(() => undefined);
+      const message =
+        payload && typeof payload === "object" && "message" in payload
+          ? String((payload as { message: unknown }).message)
+          : `${path} returned ${response.status}`;
+      throw new Error(message);
+    }
+  };
+
   function connect() {
     clearReconnectTimer();
     closeSocket();
@@ -103,10 +136,16 @@ export function createAgentClient(): AgentClientState {
         if (parsed.type === "agent.ready") {
           setStatus(parsed.payload);
           setPhase("ready");
-          setError(undefined);
+          setError(parsed.payload.lastError);
         } else if (parsed.type === "agent.error") {
           setPhase("error");
           setError(parsed.payload.message);
+        } else if (parsed.type === "capture.stats") {
+          setStats(parsed.payload);
+        } else if (parsed.type === "capture.snapshot") {
+          setEvents(parsed.payload);
+        } else if (parsed.type === "capture.event") {
+          setEvents((current) => [...current, parsed.payload].slice(-MAX_UI_EVENTS));
         }
       } catch (caught) {
         setPhase("error");
@@ -146,26 +185,52 @@ export function createAgentClient(): AgentClientState {
 
   return {
     status,
+    stats,
+    events,
     phase,
     lastMessageAt,
     error,
     httpUrl,
     liveUrl,
     reconnect: connect,
+    connectUpstream: async (request) => {
+      setError(undefined);
+      await postControl("/connect", request);
+    },
+    disconnectUpstream: async () => {
+      setError(undefined);
+      await postControl("/disconnect");
+    },
+    reconnectUpstream: async () => {
+      setError(undefined);
+      await postControl("/reconnect");
+    },
+    clearCapture: async () => {
+      setError(undefined);
+      await postControl("/clear");
+      setEvents([]);
+    },
   };
 }
 
-export function createAgentDerivedState(client: Pick<AgentClientState, "phase" | "status">) {
+export function createAgentDerivedState(
+  client: Pick<AgentClientState, "phase" | "status" | "stats">,
+) {
   return {
     isOnline: createMemo(() => client.phase() === "ready"),
+    isUpstreamConnected: createMemo(() => client.stats()?.state === "connected"),
     statusLabel: createMemo(() => {
-      const currentStatus = client.status();
-      if (client.phase() === "ready" && currentStatus) {
-        return `${currentStatus.state} / ${currentStatus.liveClients} live client${currentStatus.liveClients === 1 ? "" : "s"}`;
+      const status = client.status();
+      const stats = client.stats();
+      if (client.phase() !== "ready") {
+        return client.phase();
       }
-
-      return client.phase();
+      if (stats) {
+        return stats.state;
+      }
+      return status?.state ?? "ready";
     }),
+    targetLabel: createMemo(() => client.stats()?.targetUrl ?? client.status()?.targetUrl ?? "No upstream"),
   };
 }
 
