@@ -1,14 +1,33 @@
 @import "tailwindcss";
 
+:root {
+  --ui-bg: #08090a;
+  --ui-panel: #0d0f12;
+  --ui-raised: #13161a;
+  --ui-border: rgb(255 255 255 / 0.075);
+  --ui-border-strong: rgb(255 255 255 / 0.14);
+  --ui-text: #e7ebef;
+  --ui-muted: #77808a;
+  --ui-subtle: #9aa3ad;
+  --ui-accent: #7dd3fc;
+  --ui-accent-soft: rgb(125 211 252 / 0.12);
+  --ui-success: #8fd3a5;
+  --ui-warning: #f6c768;
+  --ui-danger: #f18f7d;
+  --traffic-light-space: 92px;
+}
+
 html,
 body,
+#app,
 #root {
   height: 100%;
   overflow: hidden;
 }
 
 body {
-  @apply bg-neutral-950 text-neutral-100;
+  background: var(--ui-bg);
+  color: var(--ui-text);
   font-family:
     Inter,
     ui-sans-serif,
@@ -17,12 +36,44 @@ body {
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 button,
 input,
 textarea {
   letter-spacing: 0;
+}
+
+input,
+textarea,
+[contenteditable=""],
+[contenteditable="true"],
+[contenteditable="plaintext-only"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+a,
+button,
+input,
+label,
+select,
+textarea,
+[role="button"],
+.no-drag,
+.electrobun-webkit-app-region-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-drag,
+.electrobun-webkit-app-region-drag {
+  -webkit-app-region: drag;
+}
+
+.titlebar-left-space {
+  padding-left: var(--traffic-light-space);
 }
 
 button,
@@ -37,7 +88,7 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 a:focus-visible {
-  outline: 2px solid rgb(103 232 249 / 0.9);
+  outline: 2px solid rgb(125 211 252 / 0.85);
   outline-offset: 2px;
 }
 
@@ -57,7 +108,7 @@ select:disabled {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+  background: rgb(255 255 255 / 0.18);
   border-radius: 999px;
 }
 
@@ -67,23 +118,23 @@ select:disabled {
 
 .field {
   min-height: 36px;
-  border: 1px solid #27272a;
+  border: 1px solid var(--ui-border);
   border-radius: 6px;
-  background: rgb(24 24 27 / 0.7);
+  background: color-mix(in srgb, var(--ui-raised) 78%, transparent);
   padding: 7px 9px;
-  color: #f4f4f5;
+  color: var(--ui-text);
   font-size: 13px;
   line-height: 18px;
   outline: none;
 }
 
 .field::placeholder {
-  color: #52525b;
+  color: color-mix(in srgb, var(--ui-muted) 58%, transparent);
 }
 
 .field:focus {
-  border-color: rgb(103 232 249 / 0.55);
-  box-shadow: 0 0 0 3px rgb(103 232 249 / 0.08);
+  border-color: rgb(125 211 252 / 0.5);
+  box-shadow: 0 0 0 3px rgb(125 211 252 / 0.08);
 }
 
 .event-grid {
@@ -106,20 +157,20 @@ select:disabled {
   top: 0;
   width: 100%;
   height: 34px;
-  border-bottom: 1px solid #27272a;
-  background: #09090b;
-  color: #f4f4f5;
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-bg);
+  color: var(--ui-text);
   font-size: 13px;
   line-height: 18px;
   text-align: left;
 }
 
 .row-button.odd-row {
-  background: rgb(24 24 27 / 0.45);
+  background: rgb(255 255 255 / 0.018);
 }
 
 .row-button:hover {
-  background: rgb(39 39 42 / 0.9);
+  background: rgb(255 255 255 / 0.045);
 }
 
 .row-button:focus-visible {
@@ -128,8 +179,8 @@ select:disabled {
 }
 
 .row-button.selected {
-  background: rgb(8 145 178 / 0.18);
-  box-shadow: inset 3px 0 0 rgb(103 232 249);
+  background: var(--ui-accent-soft);
+  box-shadow: inset 3px 0 0 var(--ui-accent);
 }
 
 .row-button.issue-row {
@@ -162,15 +213,15 @@ select:disabled {
 }
 
 .inspector-tab:hover {
-  border-color: #3f3f46;
-  background: rgb(39 39 42 / 0.55);
-  color: #f4f4f5;
+  border-color: var(--ui-border-strong);
+  background: rgb(255 255 255 / 0.045);
+  color: var(--ui-text);
 }
 
 .inspector-tab.selected {
-  border-color: rgb(103 232 249 / 0.35);
-  background: rgb(103 232 249 / 0.12);
-  color: #cffafe;
+  border-color: rgb(125 211 252 / 0.38);
+  background: var(--ui-accent-soft);
+  color: #d9f5ff;
 }
 
 .badge-live,

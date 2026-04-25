@@ -76,6 +76,7 @@ type ReplaySpeed = 0.25 | 0.5 | 1 | 2 | 4 | 8;
 type UpstreamTransport = "websocket" | "sse";
 type ReplayServerFormat = "raw" | "jsonl" | "tape";
 type FaultScenario = "off" | "drop" | "duplicate" | "reorder" | "delay" | "mutate" | "chaos";
+type BottomPanelTab = "topics" | "latency" | "diff" | "timeline";
 
 const faultScenarios: { id: FaultScenario; label: string }[] = [
   { id: "off", label: "Off" },
@@ -199,6 +200,7 @@ function App() {
   const [replayServerLoop, setReplayServerLoop] = createSignal(false);
   const [replayServerPaused, setReplayServerPaused] = createSignal(false);
   const [replayClockMs, setReplayClockMs] = createSignal(0);
+  const [bottomPanelTab, setBottomPanelTab] = createSignal<BottomPanelTab>("timeline");
   const [extractionRulesText, setExtractionRulesText] = createSignal(
     JSON.stringify(defaultExtractionRules, null, 2),
   );
@@ -430,12 +432,13 @@ function App() {
     }
   };
 
-  const connect = () =>
+  const connectUpstream = (overrides?: { url?: string; transport?: UpstreamTransport }) =>
     runControl(async () => {
-      const url = targetUrl().trim();
+      const url = (overrides?.url ?? targetUrl()).trim();
+      const selectedTransport = overrides?.transport ?? transport();
       await agent.connectUpstream({
         streamId: streamId(),
-        transport: transport(),
+        transport: selectedTransport,
         url,
         headers: parseHeaders(headersText()),
         bearerToken: bearerToken(),
@@ -458,6 +461,16 @@ function App() {
       });
       rememberRecentTarget(url, setRecentTargets);
     });
+  const connect = () => connectUpstream();
+  const startDemoStream = () => {
+    const scenario: DemoScenario = "normal";
+    const selectedTransport: UpstreamTransport = "websocket";
+    const url = demoStreamUrl(scenario, selectedTransport);
+    setDemoScenario(scenario);
+    setTransport(selectedTransport);
+    setTargetUrl(url);
+    void connectUpstream({ url, transport: selectedTransport });
+  };
 
   const selectDemoScenario = (scenario: DemoScenario) => {
     setDemoScenario(scenario);
@@ -648,17 +661,17 @@ function App() {
     });
 
   return (
-    <main class="relative h-full min-h-0 overflow-auto bg-neutral-950 pb-9 text-neutral-100 lg:overflow-hidden">
+    <main class="relative h-full min-h-0 overflow-auto bg-[var(--ui-bg)] pb-9 text-[var(--ui-text)] lg:overflow-hidden">
       <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]">
-        <section class="border-b border-neutral-800 bg-neutral-950/95 px-4 py-3">
-          <div class="flex flex-wrap items-center justify-between gap-3">
+        <section class="titlebar-drag electrobun-webkit-app-region-drag titlebar-left-space flex h-[52px] items-center border-b border-[var(--ui-border)] bg-[var(--ui-panel)] pr-3">
+          <div class="flex w-full min-w-0 flex-wrap items-center justify-between gap-3">
             <div class="flex min-w-0 items-center gap-3">
-              <div class="flex size-9 shrink-0 items-center justify-center rounded-md border border-cyan-400/35 bg-cyan-400/10 text-cyan-200">
+              <div class="flex size-8 shrink-0 items-center justify-center rounded-md border border-[var(--ui-border-strong)] bg-[var(--ui-raised)] text-[var(--ui-accent)]">
                 <Radio size={18} />
               </div>
               <div class="min-w-0">
                 <h1 class="truncate text-base font-semibold tracking-normal">Wiretap</h1>
-                <p class="truncate text-xs text-neutral-400">{agentView.targetLabel()}</p>
+                <p class="truncate text-xs text-[var(--ui-muted)]">{agentView.targetLabel()}</p>
               </div>
             </div>
 
@@ -680,7 +693,7 @@ function App() {
           </div>
         </section>
 
-        <section class="grid min-h-0 grid-cols-1 grid-rows-[minmax(280px,42vh)_minmax(360px,1fr)_minmax(320px,45vh)_auto] overflow-visible lg:grid-cols-[340px_minmax(0,1fr)_360px] lg:grid-rows-[minmax(0,1fr)_260px] lg:overflow-hidden">
+        <section class="grid min-h-0 grid-cols-1 grid-rows-[minmax(280px,42vh)_minmax(360px,1fr)_minmax(320px,45vh)_auto] overflow-visible lg:grid-cols-[330px_minmax(0,1fr)_350px] lg:grid-rows-[minmax(0,1fr)_220px] lg:overflow-hidden">
           <AgentPanel
             phase={agent.phase()}
             controlError={controlError()}
@@ -748,13 +761,13 @@ function App() {
             saveExtractionRules={saveExtractionRules}
           />
 
-          <section class="grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_auto_1fr] border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:border-x lg:border-b-0">
+          <section class="grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_auto_1fr] border-b border-[var(--ui-border)] bg-[var(--ui-bg)] lg:col-start-2 lg:border-x lg:border-b-0">
             <PanelHeader
               icon={Database}
               title="Captured Events"
               detail={`${formatCount(filteredEvents().length)} shown / ${formatCount(events().length)} retained`}
             />
-            <div class="flex min-w-0 flex-wrap items-center gap-2 border-b border-neutral-800 px-3 py-2">
+            <div class="flex min-w-0 flex-wrap items-center gap-2 border-b border-[var(--ui-border)] bg-[var(--ui-panel)] px-3 py-2">
               <select
                 class="field h-9 w-[170px] min-w-0"
                 value={streamFilter()}
@@ -765,10 +778,10 @@ function App() {
                   {(stream) => <option value={stream.id}>{stream.id}</option>}
                 </For>
               </select>
-              <div class="flex h-9 min-w-[220px] flex-1 items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900/70 px-3 text-neutral-500">
+              <div class="flex h-9 min-w-[220px] flex-1 items-center gap-2 rounded-md border border-[var(--ui-border)] bg-[var(--ui-raised)] px-3 text-[var(--ui-muted)]">
                 <Search size={15} />
                 <input
-                  class="min-w-0 flex-1 bg-transparent font-mono text-sm text-neutral-100 outline-none placeholder:text-neutral-600"
+                  class="min-w-0 flex-1 bg-transparent font-mono text-sm text-[var(--ui-text)] outline-none placeholder:text-neutral-600"
                   aria-label="Filter captured events"
                   placeholder="Filter seq, topic, key, raw..."
                   value={filter()}
@@ -785,19 +798,21 @@ function App() {
                 onClick={liveFollowPaused() ? resumeLiveFollow : pauseLiveFollow}
                 primary={liveFollowPaused()}
               />
-              <ReplayControls
-                events={replayTimeline()}
-                enabled={replayEnabled()}
-                playing={replayPlaying()}
-                speed={replaySpeed()}
-                cursorIndex={replayCursorIndex()}
-                clockMs={replayClockMs()}
-                onStart={startReplay}
-                onStop={stopReplay}
-                onTogglePlaying={() => setReplayPlaying((playing) => !playing)}
-                onSeek={seekReplay}
-                onSpeedChange={setReplaySpeed}
-              />
+              <Show when={replayTimeline().length > 0}>
+                <ReplayControls
+                  events={replayTimeline()}
+                  enabled={replayEnabled()}
+                  playing={replayPlaying()}
+                  speed={replaySpeed()}
+                  cursorIndex={replayCursorIndex()}
+                  clockMs={replayClockMs()}
+                  onStart={startReplay}
+                  onStop={stopReplay}
+                  onTogglePlaying={() => setReplayPlaying((playing) => !playing)}
+                  onSeek={seekReplay}
+                  onSpeedChange={setReplaySpeed}
+                />
+              </Show>
               <IconTextButton icon={Download} label="Export JSONL" onClick={exportCapture} />
               <IconTextButton icon={Download} label="Export Tape" onClick={exportTape} />
               <FileImportButton onImport={importCapture} />
@@ -812,11 +827,13 @@ function App() {
               replayEnabled={replayEnabled()}
               replayCursorSeq={replayCursorEvent()?.captureSeq}
               replayedThroughSeq={replayCursorEvent()?.captureSeq}
+              onConnect={connect}
+              onStartDemo={startDemoStream}
               onSelect={selectEvent}
             />
           </section>
 
-          <aside class="grid min-h-0 min-w-0 grid-rows-[auto_1fr] border-b border-neutral-800 bg-neutral-950 lg:col-start-3 lg:border-b-0">
+          <aside class="grid min-h-0 min-w-0 grid-rows-[auto_1fr] border-b border-[var(--ui-border)] bg-[var(--ui-panel)] lg:col-start-3 lg:border-b-0">
             <PanelHeader
               icon={Server}
               title="Payload Inspector"
@@ -831,25 +848,47 @@ function App() {
             <Inspector event={selectedEvent()} />
           </aside>
 
-          <section class="grid min-h-0 min-w-0 grid-cols-1 border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:col-end-4 lg:row-start-2 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1fr)_minmax(0,1.05fr)_minmax(0,1.35fr)] lg:border-l lg:border-t lg:border-b-0">
-            <TopicPanel topics={topics()} activeFilter={filter()} onFilterTopic={setFilter} />
-            <LatencyPanel analytics={latencyAnalytics()} onSelectEvent={selectEvent} />
-            <StreamDiffPanel
-              sources={diffSources()}
-              baseSource={diffBaseSource()}
-              compareSource={diffCompareSource()}
-              summary={streamDiff()}
-              loading={streamDiffLoading()}
-              error={diffError()}
-              onBaseChange={setDiffBaseSource}
-              onCompareChange={setDiffCompareSource}
-              onSelectEvent={selectEvent}
+          <section class="grid min-h-0 min-w-0 grid-rows-[38px_minmax(0,1fr)] border-b border-[var(--ui-border)] bg-[var(--ui-panel)] lg:col-start-2 lg:col-end-4 lg:row-start-2 lg:border-l lg:border-t lg:border-b-0">
+            <BottomPanelTabs
+              active={bottomPanelTab()}
+              onChange={setBottomPanelTab}
+              topicsCount={topics().length}
+              latencyCount={latencyAnalytics().sourceLag.sampleCount}
+              diffCount={
+                (streamDiff()?.missing ?? 0) +
+                (streamDiff()?.extra ?? 0) +
+                (streamDiff()?.divergent ?? 0)
+              }
+              timelineCount={timelineSummary().eventCount}
             />
-            <TimelinePanel summary={timelineSummary()} onSelectEvent={selectEvent} />
+            <div class="min-h-0 overflow-hidden">
+              <Show when={bottomPanelTab() === "topics"}>
+                <TopicPanel topics={topics()} activeFilter={filter()} onFilterTopic={setFilter} />
+              </Show>
+              <Show when={bottomPanelTab() === "latency"}>
+                <LatencyPanel analytics={latencyAnalytics()} onSelectEvent={selectEvent} />
+              </Show>
+              <Show when={bottomPanelTab() === "diff"}>
+                <StreamDiffPanel
+                  sources={diffSources()}
+                  baseSource={diffBaseSource()}
+                  compareSource={diffCompareSource()}
+                  summary={streamDiff()}
+                  loading={streamDiffLoading()}
+                  error={diffError()}
+                  onBaseChange={setDiffBaseSource}
+                  onCompareChange={setDiffCompareSource}
+                  onSelectEvent={selectEvent}
+                />
+              </Show>
+              <Show when={bottomPanelTab() === "timeline"}>
+                <TimelinePanel summary={timelineSummary()} onSelectEvent={selectEvent} />
+              </Show>
+            </div>
           </section>
         </section>
 
-        <footer class="absolute inset-x-0 bottom-0 h-9 overflow-hidden border-t border-neutral-800 bg-neutral-950 px-4">
+        <footer class="absolute inset-x-0 bottom-0 h-9 overflow-hidden border-t border-[var(--ui-border)] bg-[var(--ui-panel)] px-4">
           <div class="flex h-full min-w-0 items-center gap-3 text-xs text-neutral-400">
             <div class="flex shrink-0 items-center gap-2 text-emerald-300">
               <Activity size={14} />
@@ -934,14 +973,18 @@ type AgentPanelProps = {
 
 function AgentPanel(props: AgentPanelProps) {
   return (
-    <aside class="min-h-0 overflow-y-auto overflow-x-hidden border-b border-neutral-800 bg-neutral-950 lg:row-span-2 lg:border-b-0">
+    <aside class="min-h-0 overflow-y-auto overflow-x-hidden border-b border-[var(--ui-border)] bg-[var(--ui-panel)] lg:row-span-2 lg:border-b-0">
       <PanelHeader
         icon={Wifi}
         title="Agent Connection"
         detail={props.stats?.state ?? props.status?.state ?? props.phase}
       />
       <div class="space-y-3 p-3">
-        <div class="rounded-md border border-neutral-800 bg-neutral-900/70 p-3">
+        <Show when={props.controlError}>{(message) => <InlineIssue message={message()} />}</Show>
+
+        <UpstreamControls {...props} />
+
+        <div class="rounded-md border border-[var(--ui-border)] bg-[var(--ui-raised)] p-3">
           <div class="mb-3 flex min-w-0 items-center justify-between gap-3">
             <span class="text-xs font-medium uppercase text-neutral-500">Current Status</span>
             <StatusPill online={props.phase === "ready"} label={props.phase} compact />
@@ -953,8 +996,6 @@ function AgentPanel(props: AgentPanelProps) {
             <Metric label="Last message" value={formatTime(props.lastMessageAt)} />
           </dl>
         </div>
-
-        <Show when={props.controlError}>{(message) => <InlineIssue message={message()} />}</Show>
 
         <SessionLibrary
           sessions={props.sessions}
@@ -976,151 +1017,15 @@ function AgentPanel(props: AgentPanelProps) {
           onConnectReplay={props.connectReplaySession}
         />
 
-        <StreamList streams={props.streams} />
+        <Show when={props.streams.length > 0}>
+          <StreamList streams={props.streams} />
+        </Show>
 
         <ExtractionRuleEditor
           value={props.extractionRulesText}
           onInput={props.setExtractionRulesText}
           onSave={props.saveExtractionRules}
         />
-
-        <div class="space-y-3 rounded-md border border-neutral-800 bg-neutral-900/50 p-3">
-          <div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-neutral-500">
-            <PlugZap size={13} />
-            Upstream
-          </div>
-          <label class="grid min-w-0 gap-1">
-            <span class="truncate text-xs text-neutral-500">Demo scenario</span>
-            <select
-              class="field w-full min-w-0"
-              value={props.demoScenario}
-              onInput={(event) => props.setDemoScenario(event.currentTarget.value as DemoScenario)}
-            >
-              <For each={demoScenarios}>
-                {(scenario) => <option value={scenario.id}>{scenario.label}</option>}
-              </For>
-            </select>
-          </label>
-          <div class="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-2">
-            <Field label="Stream ID" value={props.streamId} onInput={props.setStreamId} mono />
-            <label class="grid min-w-0 gap-1">
-              <span class="truncate text-xs text-neutral-500">Transport</span>
-              <select
-                class="field w-full min-w-0"
-                value={props.transport}
-                onInput={(event) =>
-                  props.setTransport(event.currentTarget.value as UpstreamTransport)
-                }
-              >
-                <option value="websocket">WebSocket</option>
-                <option value="sse">SSE</option>
-              </select>
-            </label>
-          </div>
-          <Field
-            label="Target URI"
-            value={props.targetUrl}
-            onInput={props.setTargetUrl}
-            listId="recent-targets"
-            mono
-          />
-          <datalist id="recent-targets">
-            <For each={props.recentTargets}>{(target) => <option value={target} />}</For>
-          </datalist>
-          <div class="grid grid-cols-2 gap-2">
-            <Field
-              label="Bearer token"
-              value={props.bearerToken}
-              onInput={props.setBearerToken}
-              type="password"
-            />
-            <Field
-              label="Subprotocols"
-              value={props.subprotocols}
-              onInput={props.setSubprotocols}
-              placeholder="json, v2"
-              mono
-            />
-          </div>
-          <div class="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-2">
-            <Field
-              label="API key header"
-              value={props.apiKeyHeader}
-              onInput={props.setApiKeyHeader}
-              mono
-            />
-            <Field label="API key" value={props.apiKey} onInput={props.setApiKey} type="password" />
-          </div>
-          <label class="grid min-w-0 gap-1">
-            <span class="text-xs text-neutral-500">Custom headers</span>
-            <textarea
-              class="field min-h-[58px] w-full min-w-0 resize-none font-mono"
-              placeholder={"x-stream-id: demo\nx-client: wiretap"}
-              value={props.headersText}
-              onInput={(event) => props.setHeadersText(event.currentTarget.value)}
-            />
-          </label>
-          <div class="grid gap-2">
-            <label class="flex min-w-0 items-center gap-2 text-sm text-neutral-300">
-              <input
-                class="shrink-0 accent-cyan-300"
-                type="checkbox"
-                checked={props.autoReconnect}
-                onInput={(event) => props.setAutoReconnect(event.currentTarget.checked)}
-              />
-              <span class="truncate">Auto reconnect</span>
-            </label>
-            <div class="grid gap-2 rounded-md border border-neutral-800 bg-neutral-950/45 p-2">
-              <label class="grid min-w-0 gap-1">
-                <span class="truncate text-xs text-neutral-500">Fault injection</span>
-                <select
-                  class="field h-8 min-h-8 w-full py-1 text-xs"
-                  value={props.faultScenario}
-                  onInput={(event) =>
-                    props.setFaultScenario(event.currentTarget.value as FaultScenario)
-                  }
-                >
-                  <For each={faultScenarios}>
-                    {(scenario) => <option value={scenario.id}>{scenario.label}</option>}
-                  </For>
-                </select>
-              </label>
-              <Show when={props.faultScenario !== "off"}>
-                <div class="grid grid-cols-3 gap-2">
-                  <NumericField
-                    label="Drop"
-                    value={props.faultDropEvery}
-                    onInput={props.setFaultDropEvery}
-                  />
-                  <NumericField
-                    label="Dup"
-                    value={props.faultDuplicateEvery}
-                    onInput={props.setFaultDuplicateEvery}
-                  />
-                  <NumericField
-                    label="Reorder"
-                    value={props.faultReorderEvery}
-                    onInput={props.setFaultReorderEvery}
-                  />
-                  <NumericField
-                    label="Delay ms"
-                    value={props.faultDelayMs}
-                    onInput={props.setFaultDelayMs}
-                  />
-                  <NumericField
-                    label="Mutate"
-                    value={props.faultMutateEvery}
-                    onInput={props.setFaultMutateEvery}
-                  />
-                </div>
-              </Show>
-            </div>
-            <div class="grid grid-cols-2 gap-2">
-              <IconTextButton icon={PlugZap} label="Connect" onClick={props.connect} primary />
-              <IconTextButton icon={RefreshCw} label="Reconnect" onClick={props.reconnect} />
-            </div>
-          </div>
-        </div>
 
         <div class="space-y-2">
           <div class="flex items-center gap-2 text-xs font-medium uppercase text-neutral-500">
@@ -1135,6 +1040,153 @@ function AgentPanel(props: AgentPanelProps) {
         </div>
       </div>
     </aside>
+  );
+}
+
+function UpstreamControls(props: AgentPanelProps) {
+  return (
+    <div class="space-y-3 rounded-md border border-[var(--ui-border-strong)] bg-[var(--ui-raised)] p-3">
+      <div class="flex min-w-0 items-center justify-between gap-3">
+        <div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-neutral-400">
+          <PlugZap size={13} />
+          Upstream
+        </div>
+        <StatusPill
+          online={props.stats?.state === "connected"}
+          label={props.stats?.state ?? "idle"}
+          compact
+        />
+      </div>
+      <label class="grid min-w-0 gap-1">
+        <span class="truncate text-xs text-neutral-500">Demo scenario</span>
+        <select
+          class="field w-full min-w-0"
+          value={props.demoScenario}
+          onInput={(event) => props.setDemoScenario(event.currentTarget.value as DemoScenario)}
+        >
+          <For each={demoScenarios}>
+            {(scenario) => <option value={scenario.id}>{scenario.label}</option>}
+          </For>
+        </select>
+      </label>
+      <div class="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-2">
+        <Field label="Stream ID" value={props.streamId} onInput={props.setStreamId} mono />
+        <label class="grid min-w-0 gap-1">
+          <span class="truncate text-xs text-neutral-500">Transport</span>
+          <select
+            class="field w-full min-w-0"
+            value={props.transport}
+            onInput={(event) => props.setTransport(event.currentTarget.value as UpstreamTransport)}
+          >
+            <option value="websocket">WebSocket</option>
+            <option value="sse">SSE</option>
+          </select>
+        </label>
+      </div>
+      <Field
+        label="Target URI"
+        value={props.targetUrl}
+        onInput={props.setTargetUrl}
+        listId="recent-targets"
+        mono
+      />
+      <datalist id="recent-targets">
+        <For each={props.recentTargets}>{(target) => <option value={target} />}</For>
+      </datalist>
+      <div class="grid grid-cols-2 gap-2">
+        <Field
+          label="Bearer token"
+          value={props.bearerToken}
+          onInput={props.setBearerToken}
+          type="password"
+        />
+        <Field
+          label="Subprotocols"
+          value={props.subprotocols}
+          onInput={props.setSubprotocols}
+          placeholder="json, v2"
+          mono
+        />
+      </div>
+      <div class="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-2">
+        <Field
+          label="API key header"
+          value={props.apiKeyHeader}
+          onInput={props.setApiKeyHeader}
+          mono
+        />
+        <Field label="API key" value={props.apiKey} onInput={props.setApiKey} type="password" />
+      </div>
+      <label class="grid min-w-0 gap-1">
+        <span class="text-xs text-neutral-500">Custom headers</span>
+        <textarea
+          class="field min-h-[58px] w-full min-w-0 resize-none font-mono"
+          placeholder={"x-stream-id: demo\nx-client: wiretap"}
+          value={props.headersText}
+          onInput={(event) => props.setHeadersText(event.currentTarget.value)}
+        />
+      </label>
+      <div class="grid gap-2">
+        <label class="flex min-w-0 items-center gap-2 text-sm text-neutral-300">
+          <input
+            class="shrink-0 accent-cyan-300"
+            type="checkbox"
+            checked={props.autoReconnect}
+            onInput={(event) => props.setAutoReconnect(event.currentTarget.checked)}
+          />
+          <span class="truncate">Auto reconnect</span>
+        </label>
+        <div class="grid gap-2 rounded-md border border-[var(--ui-border)] bg-[var(--ui-bg)] p-2">
+          <label class="grid min-w-0 gap-1">
+            <span class="truncate text-xs text-neutral-500">Fault injection</span>
+            <select
+              class="field h-8 min-h-8 w-full py-1 text-xs"
+              value={props.faultScenario}
+              onInput={(event) =>
+                props.setFaultScenario(event.currentTarget.value as FaultScenario)
+              }
+            >
+              <For each={faultScenarios}>
+                {(scenario) => <option value={scenario.id}>{scenario.label}</option>}
+              </For>
+            </select>
+          </label>
+          <Show when={props.faultScenario !== "off"}>
+            <div class="grid grid-cols-3 gap-2">
+              <NumericField
+                label="Drop"
+                value={props.faultDropEvery}
+                onInput={props.setFaultDropEvery}
+              />
+              <NumericField
+                label="Dup"
+                value={props.faultDuplicateEvery}
+                onInput={props.setFaultDuplicateEvery}
+              />
+              <NumericField
+                label="Reorder"
+                value={props.faultReorderEvery}
+                onInput={props.setFaultReorderEvery}
+              />
+              <NumericField
+                label="Delay ms"
+                value={props.faultDelayMs}
+                onInput={props.setFaultDelayMs}
+              />
+              <NumericField
+                label="Mutate"
+                value={props.faultMutateEvery}
+                onInput={props.setFaultMutateEvery}
+              />
+            </div>
+          </Show>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <IconTextButton icon={PlugZap} label="Connect" onClick={props.connect} primary />
+          <IconTextButton icon={RefreshCw} label="Reconnect" onClick={props.reconnect} />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1158,7 +1210,7 @@ function SessionLibrary(props: {
   onConnectReplay: (sessionId: string) => void;
 }) {
   return (
-    <div class="space-y-2 rounded-md border border-neutral-800 bg-neutral-900/50 p-3">
+    <div class="space-y-2 rounded-md border border-[var(--ui-border)] bg-[var(--ui-panel)] p-3">
       <div class="flex min-w-0 items-center justify-between gap-2">
         <div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-neutral-500">
           <Database size={13} />
@@ -1174,129 +1226,132 @@ function SessionLibrary(props: {
           <RefreshCw size={13} />
         </button>
       </div>
-      <div class="grid gap-2 rounded-md border border-neutral-800 bg-neutral-950/45 p-2">
-        <div class="grid grid-cols-2 gap-2">
-          <label class="grid min-w-0 gap-1">
-            <span class="truncate text-xs text-neutral-500">Replay speed</span>
-            <select
-              class="field h-8 w-full min-w-0"
-              value={props.replaySpeed}
-              onInput={(event) =>
-                props.onReplaySpeedChange(Number(event.currentTarget.value) as ReplaySpeed)
-              }
-            >
-              <For each={[0.25, 0.5, 1, 2, 4, 8] as ReplaySpeed[]}>
-                {(speed) => <option value={speed}>{speed}x</option>}
-              </For>
-            </select>
-          </label>
-          <label class="grid min-w-0 gap-1">
-            <span class="truncate text-xs text-neutral-500">Replay source</span>
-            <select
-              class="field h-8 w-full min-w-0"
-              value={props.replayFormat}
-              onInput={(event) =>
-                props.onReplayFormatChange(event.currentTarget.value as ReplayServerFormat)
-              }
-            >
-              <option value="raw">Raw</option>
-              <option value="jsonl">JSONL</option>
-              <option value="tape">Tape</option>
-            </select>
-          </label>
-        </div>
-        <div class="grid grid-cols-2 gap-2 text-sm text-neutral-300">
-          <label class="flex min-w-0 items-center gap-2">
-            <input
-              class="shrink-0 accent-cyan-300"
-              type="checkbox"
-              checked={props.replayLoop}
-              onInput={(event) => props.onReplayLoopChange(event.currentTarget.checked)}
-            />
-            <span class="truncate">Loop</span>
-          </label>
-          <label class="flex min-w-0 items-center gap-2">
-            <input
-              class="shrink-0 accent-cyan-300"
-              type="checkbox"
-              checked={props.replayPaused}
-              onInput={(event) => props.onReplayPausedChange(event.currentTarget.checked)}
-            />
-            <span class="truncate">Start paused</span>
-          </label>
-        </div>
-      </div>
       <Show
         when={props.sessions.length > 0}
         fallback={
-          <div class="text-sm text-neutral-500">Saved captures appear after recording.</div>
+          <div class="rounded-md border border-[var(--ui-border)] bg-[var(--ui-bg)] px-3 py-2 text-xs text-neutral-500">
+            Saved captures appear after recording.
+          </div>
         }
       >
-        <div class="grid max-h-[230px] gap-2 overflow-auto pr-1">
-          <For each={props.sessions}>
-            {(session) => {
-              const active = () => props.currentSession?.id === session.id;
-              return (
-                <div
-                  class={`grid gap-2 rounded-md border p-2 ${
-                    active()
-                      ? "border-cyan-300/40 bg-cyan-300/10"
-                      : "border-neutral-800 bg-neutral-950/45"
-                  }`}
+        <div class="grid gap-2">
+          <div class="grid gap-2 rounded-md border border-[var(--ui-border)] bg-[var(--ui-bg)] p-2">
+            <div class="grid grid-cols-2 gap-2">
+              <label class="grid min-w-0 gap-1">
+                <span class="truncate text-xs text-neutral-500">Replay speed</span>
+                <select
+                  class="field h-8 w-full min-w-0"
+                  value={props.replaySpeed}
+                  onInput={(event) =>
+                    props.onReplaySpeedChange(Number(event.currentTarget.value) as ReplaySpeed)
+                  }
                 >
-                  <button
-                    type="button"
-                    class="grid min-w-0 gap-1 text-left"
-                    onClick={() => props.onOpen(session.id)}
+                  <For each={[0.25, 0.5, 1, 2, 4, 8] as ReplaySpeed[]}>
+                    {(speed) => <option value={speed}>{speed}x</option>}
+                  </For>
+                </select>
+              </label>
+              <label class="grid min-w-0 gap-1">
+                <span class="truncate text-xs text-neutral-500">Replay source</span>
+                <select
+                  class="field h-8 w-full min-w-0"
+                  value={props.replayFormat}
+                  onInput={(event) =>
+                    props.onReplayFormatChange(event.currentTarget.value as ReplayServerFormat)
+                  }
+                >
+                  <option value="raw">Raw</option>
+                  <option value="jsonl">JSONL</option>
+                  <option value="tape">Tape</option>
+                </select>
+              </label>
+            </div>
+            <div class="grid grid-cols-2 gap-2 text-sm text-neutral-300">
+              <label class="flex min-w-0 items-center gap-2">
+                <input
+                  class="shrink-0 accent-cyan-300"
+                  type="checkbox"
+                  checked={props.replayLoop}
+                  onInput={(event) => props.onReplayLoopChange(event.currentTarget.checked)}
+                />
+                <span class="truncate">Loop</span>
+              </label>
+              <label class="flex min-w-0 items-center gap-2">
+                <input
+                  class="shrink-0 accent-cyan-300"
+                  type="checkbox"
+                  checked={props.replayPaused}
+                  onInput={(event) => props.onReplayPausedChange(event.currentTarget.checked)}
+                />
+                <span class="truncate">Start paused</span>
+              </label>
+            </div>
+          </div>
+          <div class="grid max-h-[220px] gap-1.5 overflow-auto pr-1">
+            <For each={props.sessions}>
+              {(session) => {
+                const active = () => props.currentSession?.id === session.id;
+                return (
+                  <div
+                    class={`grid gap-1.5 rounded-md border p-2 ${
+                      active()
+                        ? "border-[var(--ui-border-strong)] bg-[var(--ui-accent-soft)]"
+                        : "border-[var(--ui-border)] bg-[var(--ui-bg)]"
+                    }`}
                   >
-                    <div class="flex min-w-0 items-center justify-between gap-2">
-                      <span class="truncate font-mono text-xs text-neutral-200">{session.id}</span>
-                      <span class={active() ? "badge-live" : "badge-muted"}>
-                        {active() ? "Open" : `${formatCount(session.eventCount)} events`}
-                      </span>
-                    </div>
-                    <div class="grid grid-cols-2 gap-2 text-xs text-neutral-500">
-                      <span class="truncate">{formatSessionDate(session.updatedAt)}</span>
-                      <span class="truncate text-right">
-                        {formatCount(session.issueCount)} flagged
-                      </span>
-                    </div>
-                  </button>
-                  <div class="grid grid-cols-5 gap-1">
-                    <MiniIconButton
-                      icon={FolderOpen}
-                      label="Open"
+                    <button
+                      type="button"
+                      class="grid min-w-0 gap-1 text-left"
                       onClick={() => props.onOpen(session.id)}
-                    />
-                    <MiniIconButton
-                      icon={Play}
-                      label="Replay"
-                      onClick={() => props.onConnectReplay(session.id)}
-                    />
-                    <MiniIconButton
-                      icon={Download}
-                      label="JSONL"
-                      onClick={() => props.onExport(session.id)}
-                    />
-                    <MiniIconButton
-                      icon={Download}
-                      label="Tape"
-                      onClick={() => props.onExportTape(session.id)}
-                    />
-                    <MiniIconButton
-                      icon={Trash2}
-                      label="Delete"
-                      onClick={() => props.onDelete(session.id)}
-                      danger
-                    />
+                    >
+                      <div class="flex min-w-0 items-center justify-between gap-2">
+                        <span class="truncate font-mono text-xs text-neutral-200">
+                          {shortSessionID(session.id)}
+                        </span>
+                        <span class={active() ? "badge-live" : "badge-muted"}>
+                          {active() ? "Open" : `${formatCount(session.eventCount)} events`}
+                        </span>
+                      </div>
+                      <div class="grid grid-cols-2 gap-2 text-xs text-neutral-500">
+                        <span class="truncate">{formatSessionDate(session.updatedAt)}</span>
+                        <span class="truncate text-right">
+                          {formatCount(session.issueCount)} flagged
+                        </span>
+                      </div>
+                    </button>
+                    <div class="grid grid-cols-5 gap-1">
+                      <MiniIconButton
+                        icon={FolderOpen}
+                        label="Open"
+                        onClick={() => props.onOpen(session.id)}
+                      />
+                      <MiniIconButton
+                        icon={Play}
+                        label="Replay"
+                        onClick={() => props.onConnectReplay(session.id)}
+                      />
+                      <MiniIconButton
+                        icon={Download}
+                        label="JSONL"
+                        onClick={() => props.onExport(session.id)}
+                      />
+                      <MiniIconButton
+                        icon={Download}
+                        label="Tape"
+                        onClick={() => props.onExportTape(session.id)}
+                      />
+                      <MiniIconButton
+                        icon={Trash2}
+                        label="Delete"
+                        onClick={() => props.onDelete(session.id)}
+                        danger
+                      />
+                    </div>
                   </div>
-                  <div class="truncate font-mono text-[11px] text-neutral-500">
-                    {props.replayEndpoint(session.id)}
-                  </div>
-                </div>
-              );
-            }}
-          </For>
+                );
+              }}
+            </For>
+          </div>
         </div>
       </Show>
     </div>
@@ -1384,6 +1439,8 @@ function VirtualEventTable(props: {
   replayEnabled: boolean;
   replayCursorSeq: number | undefined;
   replayedThroughSeq: number | undefined;
+  onConnect: () => void;
+  onStartDemo: () => void;
   onSelect: (captureSeq: number) => void;
 }) {
   const rowHeight = 34;
@@ -1444,7 +1501,16 @@ function VirtualEventTable(props: {
         <span>Type</span>
         <span>Payload preview</span>
       </div>
-      <Show when={props.events.length > 0} fallback={<EmptyState connected={props.connected} />}>
+      <Show
+        when={props.events.length > 0}
+        fallback={
+          <EmptyState
+            connected={props.connected}
+            onConnect={props.onConnect}
+            onStartDemo={props.onStartDemo}
+          />
+        }
+      >
         <div
           ref={setViewport}
           class="event-table-scroll min-h-0 overflow-auto"
@@ -1517,17 +1583,15 @@ function VirtualEventTable(props: {
   );
 }
 
-type InspectorTab = "parsed" | "payload" | "correlation" | "raw" | "issues" | "metadata";
+type InspectorTab = "parsed" | "raw" | "issues" | "meta";
 
 function Inspector(props: { event: CaptureEvent | undefined }) {
-  const [tab, setTab] = createSignal<InspectorTab>("payload");
+  const [tab, setTab] = createSignal<InspectorTab>("parsed");
   const tabs: { id: InspectorTab; label: string }[] = [
     { id: "parsed", label: "Parsed" },
-    { id: "payload", label: "Payload" },
-    { id: "correlation", label: "Trace" },
     { id: "raw", label: "Raw" },
     { id: "issues", label: "Issues" },
-    { id: "metadata", label: "Metadata" },
+    { id: "meta", label: "Meta" },
   ];
 
   return (
@@ -1536,14 +1600,14 @@ function Inspector(props: { event: CaptureEvent | undefined }) {
       fallback={
         <EmptyPanel
           icon={Server}
-          title="Select an event"
-          detail="Payload, parsed envelope, issues, and raw frame details render here."
+          title="No event selected"
+          detail="Parsed payload, raw frame, issues, and metadata render here."
         />
       }
     >
       {(event) => (
         <div class="grid min-h-0 grid-rows-[auto_auto_1fr]">
-          <div class="border-b border-neutral-800 p-4">
+          <div class="border-b border-[var(--ui-border)] p-3">
             <dl class="grid grid-cols-[88px_1fr] gap-y-2 text-sm">
               <dt class="text-neutral-500">Sequence</dt>
               <dd class="truncate text-right font-mono text-neutral-100">
@@ -1569,7 +1633,7 @@ function Inspector(props: { event: CaptureEvent | undefined }) {
             </dl>
           </div>
           <div
-            class="flex min-w-0 gap-1 border-b border-neutral-800 bg-neutral-900/50 p-1"
+            class="flex min-w-0 gap-1 border-b border-[var(--ui-border)] bg-[var(--ui-bg)] p-1"
             role="tablist"
             aria-label="Payload inspector tabs"
           >
@@ -1590,7 +1654,7 @@ function Inspector(props: { event: CaptureEvent | undefined }) {
             </For>
           </div>
           <div
-            class="min-h-0 overflow-auto p-4"
+            class="min-h-0 overflow-auto bg-[var(--ui-bg)] p-3"
             role="tabpanel"
             id={`inspector-panel-${tab()}`}
             aria-labelledby={`inspector-tab-${tab()}`}
@@ -1605,82 +1669,12 @@ function Inspector(props: { event: CaptureEvent | undefined }) {
                 </div>
               </Show>
             </Show>
-            <Show when={tab() === "correlation"}>
-              <CorrelationPanel event={event()} />
-            </Show>
             <Show when={tab() !== "issues"}>
-              <Show when={tab() !== "correlation"}>
-                <pre class="min-h-[180px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-5 text-neutral-200">
-                  {formatInspectorTab(event(), tab())}
-                </pre>
-              </Show>
+              <pre class="min-h-[180px] overflow-auto whitespace-pre-wrap rounded-md border border-[var(--ui-border)] bg-[var(--ui-panel)] p-3 font-mono text-xs leading-5 text-neutral-200">
+                {formatInspectorTab(event(), tab())}
+              </pre>
             </Show>
           </div>
-        </div>
-      )}
-    </Show>
-  );
-}
-
-function CorrelationPanel(props: { event: CaptureEvent }) {
-  const correlation = () => props.event.correlation;
-  return (
-    <Show
-      when={correlation()}
-      fallback={<div class="text-sm text-neutral-500">No trace or log correlation fields.</div>}
-    >
-      {(value) => (
-        <div class="grid gap-3">
-          <dl class="grid grid-cols-[104px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
-            <dt class="text-neutral-500">Trace ID</dt>
-            <dd class="truncate font-mono text-neutral-100">{value().traceId ?? "--"}</dd>
-            <dt class="text-neutral-500">Span ID</dt>
-            <dd class="truncate font-mono text-neutral-200">{value().spanId ?? "--"}</dd>
-            <dt class="text-neutral-500">Parent span</dt>
-            <dd class="truncate font-mono text-neutral-300">{value().parentSpanId ?? "--"}</dd>
-            <dt class="text-neutral-500">Log ID</dt>
-            <dd class="truncate font-mono text-neutral-300">{value().logId ?? "--"}</dd>
-            <dt class="text-neutral-500">Service</dt>
-            <dd class="truncate font-mono text-neutral-300">{value().serviceName ?? "--"}</dd>
-            <dt class="text-neutral-500">Source</dt>
-            <dd class="truncate font-mono text-neutral-400">{value().source ?? "--"}</dd>
-          </dl>
-          <Show when={value().traceQueryUrl || value().logQueryUrl || value().otlpEndpoint}>
-            <div class="grid gap-2 rounded-md border border-neutral-800 bg-neutral-900/50 p-3 text-xs">
-              <Show when={value().traceQueryUrl}>
-                {(href) => (
-                  <a
-                    class="truncate font-mono text-cyan-200 hover:text-cyan-100"
-                    href={href()}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    trace query: {href()}
-                  </a>
-                )}
-              </Show>
-              <Show when={value().logQueryUrl}>
-                {(href) => (
-                  <a
-                    class="truncate font-mono text-cyan-200 hover:text-cyan-100"
-                    href={href()}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    log query: {href()}
-                  </a>
-                )}
-              </Show>
-              <Show when={value().otlpEndpoint}>
-                {(endpoint) => (
-                  <span class="truncate font-mono text-neutral-400">otlp: {endpoint()}</span>
-                )}
-              </Show>
-            </div>
-          </Show>
-          <pre class="min-h-[120px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-5 text-neutral-300">
-            {stringifyInspectorValue(value())}
-          </pre>
         </div>
       )}
     </Show>
@@ -1745,6 +1739,54 @@ function TopicPanel(props: {
           </For>
         </div>
       </Show>
+    </div>
+  );
+}
+
+function BottomPanelTabs(props: {
+  active: BottomPanelTab;
+  onChange: (value: BottomPanelTab) => void;
+  topicsCount: number;
+  latencyCount: number;
+  diffCount: number;
+  timelineCount: number;
+}) {
+  const items = createMemo<
+    {
+      id: BottomPanelTab;
+      label: string;
+      count: number;
+    }[]
+  >(() => [
+    { id: "topics", label: "Topics", count: props.topicsCount },
+    { id: "latency", label: "Latency", count: props.latencyCount },
+    { id: "diff", label: "Stream Diff", count: props.diffCount },
+    { id: "timeline", label: "Timeline", count: props.timelineCount },
+  ]);
+  return (
+    <div
+      class="flex min-w-0 items-center gap-1 border-b border-[var(--ui-border)] bg-[var(--ui-bg)] px-2"
+      role="tablist"
+      aria-label="Capture analytics"
+    >
+      <For each={items()}>
+        {(item) => (
+          <button
+            type="button"
+            class={`inline-flex h-7 min-w-0 items-center gap-2 rounded-md border px-2.5 text-xs ${
+              props.active === item.id
+                ? "border-[var(--ui-border-strong)] bg-[var(--ui-raised)] text-neutral-100"
+                : "border-transparent text-neutral-500 hover:border-[var(--ui-border)] hover:text-neutral-300"
+            }`}
+            role="tab"
+            aria-selected={props.active === item.id ? "true" : "false"}
+            onClick={() => props.onChange(item.id)}
+          >
+            <span class="truncate">{item.label}</span>
+            <span class="font-mono text-[11px] text-neutral-500">{formatCount(item.count)}</span>
+          </button>
+        )}
+      </For>
     </div>
   );
 }
@@ -2279,8 +2321,8 @@ function StatusPill(props: { online: boolean; label: string; compact?: boolean }
     <div
       class={`inline-flex h-8 items-center gap-2 rounded-md border px-2.5 text-sm ${
         props.online
-          ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
-          : "border-neutral-700 bg-neutral-900 text-neutral-300"
+          ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
+          : "border-[var(--ui-border)] bg-[var(--ui-raised)] text-neutral-400"
       } ${props.compact ? "h-7 text-xs" : ""}`}
     >
       <Icon size={props.compact ? 13 : 15} />
@@ -2296,7 +2338,7 @@ function PanelHeader(props: {
 }) {
   const Icon = props.icon;
   return (
-    <div class="flex h-12 items-center justify-between gap-3 border-b border-neutral-800 px-4">
+    <div class="flex h-10 items-center justify-between gap-3 border-b border-[var(--ui-border)] px-3">
       <div class="flex min-w-0 items-center gap-2">
         <Icon class="shrink-0 text-neutral-400" size={16} />
         <h2 class="truncate text-sm font-medium">{props.title}</h2>
@@ -2358,8 +2400,8 @@ function IconTextButton(props: {
       type="button"
       class={`inline-flex h-9 min-w-0 items-center justify-center gap-2 rounded-md border px-3 text-sm transition-colors active:scale-[0.98] ${
         props.primary
-          ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100 hover:bg-cyan-300/20"
-          : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:border-neutral-500 hover:bg-neutral-800"
+          ? "border-cyan-300/38 bg-cyan-300/12 text-cyan-100 hover:bg-cyan-300/18"
+          : "border-[var(--ui-border)] bg-[var(--ui-raised)] text-neutral-200 hover:border-[var(--ui-border-strong)] hover:bg-neutral-800/80"
       } disabled:opacity-45 disabled:active:scale-100`}
       disabled={disabled()}
       onClick={() => props.onClick?.()}
@@ -2372,7 +2414,7 @@ function IconTextButton(props: {
 
 function FileImportButton(props: { onImport: (file: File) => void }) {
   return (
-    <label class="inline-flex h-9 min-w-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-neutral-700 bg-neutral-900 px-3 text-sm text-neutral-100 transition-colors hover:border-neutral-500 hover:bg-neutral-800 active:scale-[0.98]">
+    <label class="inline-flex h-9 min-w-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-[var(--ui-border)] bg-[var(--ui-raised)] px-3 text-sm text-neutral-200 transition-colors hover:border-[var(--ui-border-strong)] hover:bg-neutral-800/80 active:scale-[0.98]">
       <Upload class="shrink-0" size={15} />
       <span class="truncate">Import JSONL</span>
       <input
@@ -2407,7 +2449,7 @@ function ReplayControls(props: {
   const cursor = () => (props.enabled ? Math.max(0, props.cursorIndex) : 0);
   const disabled = () => props.events.length === 0;
   return (
-    <div class="grid min-w-[280px] flex-1 grid-cols-[auto_auto_minmax(96px,1fr)_76px] items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900/55 px-2 py-1">
+    <div class="grid min-w-[280px] flex-1 grid-cols-[auto_auto_minmax(96px,1fr)_76px] items-center gap-2 rounded-md border border-[var(--ui-border)] bg-[var(--ui-raised)] px-2 py-1">
       <IconTextButton
         icon={props.enabled && props.playing ? Pause : Play}
         label={props.enabled ? (props.playing ? "Pause replay" : "Play replay") : "Replay"}
@@ -2417,7 +2459,7 @@ function ReplayControls(props: {
       />
       <button
         type="button"
-        class="inline-flex h-8 min-w-0 items-center justify-center rounded-md border border-neutral-700 bg-neutral-950 px-2 text-xs text-neutral-200 hover:border-neutral-500 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-45"
+        class="inline-flex h-8 min-w-0 items-center justify-center rounded-md border border-[var(--ui-border)] bg-[var(--ui-bg)] px-2 text-xs text-neutral-300 hover:border-[var(--ui-border-strong)] hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-45"
         disabled={!props.enabled}
         onClick={props.onStop}
       >
@@ -2468,7 +2510,7 @@ function MiniIconButton(props: {
       class={`inline-flex h-8 min-w-0 items-center justify-center gap-1 rounded-md border px-2 text-xs transition-colors active:scale-[0.98] ${
         props.danger
           ? "border-amber-500/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/15"
-          : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:border-neutral-500 hover:bg-neutral-800"
+          : "border-[var(--ui-border)] bg-[var(--ui-raised)] text-neutral-300 hover:border-[var(--ui-border-strong)] hover:bg-neutral-800"
       }`}
       onClick={props.onClick}
       title={props.label}
@@ -2491,7 +2533,7 @@ function Metric(props: { label: string; value: string }) {
 
 function EndpointRow(props: { label: string; value: string }) {
   return (
-    <div class="grid gap-1 rounded-md border border-neutral-800 bg-neutral-900/50 p-2">
+    <div class="grid gap-1 rounded-md border border-[var(--ui-border)] bg-[var(--ui-raised)] p-2">
       <span class="text-xs text-neutral-500">{props.label}</span>
       <span class="truncate font-mono text-xs text-neutral-300">{props.value}</span>
     </div>
@@ -2523,17 +2565,27 @@ function IssueBadge(props: { issue: CaptureIssue }) {
   );
 }
 
-function EmptyState(props: { connected: boolean }) {
+function EmptyState(props: { connected: boolean; onConnect: () => void; onStartDemo: () => void }) {
   return (
-    <EmptyPanel
-      icon={Database}
-      title={props.connected ? "Awaiting upstream frames" : "No captured events yet"}
-      detail={
-        props.connected
-          ? "Captured upstream messages will render here in capture order."
-          : "Connect an upstream WebSocket or SSE stream to start capturing events."
-      }
-    />
+    <div class="flex min-h-[260px] flex-col items-center justify-center gap-4 p-8 text-center">
+      <div class="flex size-10 items-center justify-center rounded-md border border-[var(--ui-border)] bg-[var(--ui-raised)] text-[var(--ui-muted)]">
+        <Database size={18} />
+      </div>
+      <div class="grid gap-1">
+        <h3 class="text-sm font-medium text-neutral-200">
+          {props.connected ? "Awaiting upstream frames" : "No captured events yet"}
+        </h3>
+        <p class="max-w-[360px] text-sm leading-5 text-neutral-500">
+          {props.connected
+            ? "Captured upstream messages will render here in capture order."
+            : "Connect your configured upstream or start the local demo stream."}
+        </p>
+      </div>
+      <div class="flex min-w-0 flex-wrap items-center justify-center gap-2">
+        <IconTextButton icon={PlugZap} label="Connect upstream" onClick={props.onConnect} primary />
+        <IconTextButton icon={Radio} label="Start demo stream" onClick={props.onStartDemo} />
+      </div>
+    </div>
   );
 }
 
@@ -2544,12 +2596,12 @@ function EmptyPanel(props: {
 }) {
   const Icon = props.icon;
   return (
-    <div class="flex min-h-[180px] flex-col items-center justify-center gap-2 p-6 text-center">
-      <div class="flex size-9 items-center justify-center rounded-md border border-neutral-800 bg-neutral-900 text-neutral-500">
+    <div class="flex min-h-[128px] flex-col items-center justify-center gap-2 p-4 text-center">
+      <div class="flex size-8 items-center justify-center rounded-md border border-[var(--ui-border)] bg-[var(--ui-raised)] text-neutral-600">
         <Icon size={17} />
       </div>
       <h3 class="text-sm font-medium text-neutral-200">{props.title}</h3>
-      <p class="max-w-[300px] text-sm leading-5 text-neutral-500">{props.detail}</p>
+      <p class="max-w-[300px] text-xs leading-5 text-neutral-500">{props.detail}</p>
     </div>
   );
 }
@@ -2756,17 +2808,14 @@ function eventReplayState(
 function formatInspectorTab(event: CaptureEvent, tab: InspectorTab): string {
   if (tab === "parsed") {
     return stringifyInspectorValue(
-      event.envelope ?? { parseError: event.parseError ?? "No parsed envelope" },
+      event.envelope ?? {
+        payload: event.raw ?? event.rawBase64 ?? null,
+        parseError: event.parseError ?? "No parsed envelope",
+      },
     );
-  }
-  if (tab === "payload") {
-    return stringifyInspectorValue(event.envelope?.payload ?? null);
   }
   if (tab === "raw") {
     return event.raw ?? event.rawBase64 ?? "";
-  }
-  if (tab === "correlation") {
-    return stringifyInspectorValue(event.correlation ?? null);
   }
   return stringifyInspectorValue({
     id: event.id,
@@ -2786,6 +2835,7 @@ function formatInspectorTab(event: CaptureEvent, tab: InspectorTab): string {
     effectiveKey: event.effectiveKey,
     sourceTs: event.sourceTs,
     correlation: event.correlation,
+    issues: event.issues,
     statuses: event.statuses,
   });
 }
