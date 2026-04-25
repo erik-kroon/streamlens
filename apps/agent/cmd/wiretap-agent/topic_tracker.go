@@ -88,6 +88,52 @@ func newTopicTracker() *topicTracker {
 	return &topicTracker{topics: make(map[string]*topicAggregate)}
 }
 
+func newTopicTrackerFromSnapshot(topics []topicState) *topicTracker {
+	tracker := newTopicTracker()
+	for _, state := range topics {
+		firstSeenAt, err := time.Parse(time.RFC3339Nano, state.FirstSeenAt)
+		if err != nil {
+			firstSeenAt = time.Now().UTC()
+		}
+		lastSeenAt, err := time.Parse(time.RFC3339Nano, state.LastSeenAt)
+		if err != nil {
+			lastSeenAt = firstSeenAt
+		}
+		var staleSince *time.Time
+		if state.StaleSince != "" {
+			parsed, err := time.Parse(time.RFC3339Nano, state.StaleSince)
+			if err == nil {
+				staleSince = &parsed
+			}
+		}
+		tracker.topics[state.ID] = &topicAggregate{
+			ID:               state.ID,
+			Topic:            state.Topic,
+			Key:              state.Key,
+			Scope:            state.Scope,
+			Count:            state.Count,
+			Bytes:            state.Bytes,
+			FirstSeenAt:      firstSeenAt,
+			LastSeenAt:       lastSeenAt,
+			LastEventID:      state.LastEventID,
+			LastSeq:          state.LastSeq,
+			EventsPerSec:     state.EventsPerSec,
+			BytesPerSec:      state.BytesPerSec,
+			Stale:            state.Stale,
+			StaleSince:       staleSince,
+			StaleThresholdMs: state.StaleThresholdMs,
+			IssueCount:       state.IssueCount,
+			StaleCount:       state.StaleCount,
+			GapCount:         state.GapCount,
+			DuplicateCount:   state.DuplicateCount,
+			OutOfOrderCount:  state.OutOfOrderCount,
+			ParseErrorCount:  state.ParseErrorCount,
+			SchemaErrorCount: state.SchemaErrorCount,
+		}
+	}
+	return tracker
+}
+
 func (tracker *topicTracker) record(event captureEvent) (topicState, bool) {
 	topicName := event.Topic
 	if topicName == "" {

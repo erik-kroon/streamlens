@@ -26,6 +26,9 @@ export type AgentError = {
 export type CaptureStats = {
   connections: number;
   events: number;
+  retainedEvents: number;
+  droppedEvents: number;
+  bufferCapacity: number;
   issues: number;
   liveClients: number;
   uptimeMs: number;
@@ -193,6 +196,9 @@ function isCaptureStats(value: unknown): value is CaptureStats {
     isRecord(value) &&
     typeof value.connections === "number" &&
     typeof value.events === "number" &&
+    typeof value.retainedEvents === "number" &&
+    typeof value.droppedEvents === "number" &&
+    typeof value.bufferCapacity === "number" &&
     typeof value.issues === "number" &&
     typeof value.liveClients === "number" &&
     typeof value.uptimeMs === "number" &&

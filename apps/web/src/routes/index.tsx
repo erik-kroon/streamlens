@@ -5,6 +5,7 @@ import {
   Ban,
   Clock3,
   Database,
+  Download,
   Eraser,
   Link,
   Pause,
@@ -38,10 +39,23 @@ export const Route = createFileRoute("/")({
   component: App,
 });
 
+const demoScenarios = [
+  { id: "normal", label: "Normal" },
+  { id: "gap", label: "Gap" },
+  { id: "duplicate", label: "Duplicate" },
+  { id: "out_of_order", label: "Out of order" },
+  { id: "stale", label: "Stale" },
+  { id: "malformed", label: "Malformed" },
+  { id: "oversized", label: "Oversized" },
+] as const;
+
+type DemoScenario = (typeof demoScenarios)[number]["id"];
+
 function App() {
   const agent = createAgentClient();
   const agentView = createAgentDerivedState(agent);
-  const [targetUrl, setTargetUrl] = createSignal("ws://localhost:8791/stream");
+  const [demoScenario, setDemoScenario] = createSignal<DemoScenario>("normal");
+  const [targetUrl, setTargetUrl] = createSignal(demoStreamUrl("normal"));
   const [headersText, setHeadersText] = createSignal("");
   const [bearerToken, setBearerToken] = createSignal("");
   const [apiKeyHeader, setApiKeyHeader] = createSignal("x-api-key");
@@ -130,6 +144,11 @@ function App() {
       }),
     );
 
+  const selectDemoScenario = (scenario: DemoScenario) => {
+    setDemoScenario(scenario);
+    setTargetUrl(demoStreamUrl(scenario));
+  };
+
   createEffect(() => {
     if (liveFollowPaused()) {
       return;
@@ -171,6 +190,8 @@ function App() {
       setFollowVersion((version) => version + 1);
     });
 
+  const exportCapture = () => runControl(agent.exportJSONL);
+
   return (
     <main class="relative h-full min-h-0 overflow-hidden bg-neutral-950 pb-9 text-neutral-100">
       <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]">
@@ -210,6 +231,8 @@ function App() {
             endpoints={endpoints()}
             targetUrl={targetUrl()}
             setTargetUrl={setTargetUrl}
+            demoScenario={demoScenario()}
+            setDemoScenario={selectDemoScenario}
             headersText={headersText()}
             setHeadersText={setHeadersText}
             bearerToken={bearerToken()}
@@ -252,6 +275,7 @@ function App() {
                 onClick={liveFollowPaused() ? resumeLiveFollow : pauseLiveFollow}
                 primary={liveFollowPaused()}
               />
+              <IconTextButton icon={Download} label="Export JSONL" onClick={exportCapture} />
               <IconTextButton icon={Eraser} label="Clear" onClick={clearCapture} />
             </div>
             <VirtualEventTable
@@ -277,12 +301,7 @@ function App() {
 
           <section class="grid min-h-0 min-w-0 grid-cols-1 border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:col-end-4 lg:row-start-2 lg:grid-cols-[300px_minmax(0,1fr)] lg:border-l lg:border-t lg:border-b-0">
             <TopicPanel topics={topics()} activeFilter={filter()} onFilterTopic={setFilter} />
-            <CapturePanel
-              stats={agent.stats()}
-              events={events()}
-              topics={topics()}
-              onSelectEvent={selectEvent}
-            />
+            <CapturePanel stats={agent.stats()} events={events()} onSelectEvent={selectEvent} />
           </section>
         </section>
 
@@ -313,6 +332,8 @@ type AgentPanelProps = {
   endpoints: [string, string][];
   targetUrl: string;
   setTargetUrl: (value: string) => void;
+  demoScenario: DemoScenario;
+  setDemoScenario: (value: DemoScenario) => void;
   headersText: string;
   setHeadersText: (value: string) => void;
   bearerToken: string;
@@ -358,6 +379,18 @@ function AgentPanel(props: AgentPanelProps) {
             <PlugZap size={13} />
             Upstream
           </div>
+          <label class="grid min-w-0 gap-1">
+            <span class="truncate text-xs text-neutral-500">Demo scenario</span>
+            <select
+              class="field w-full min-w-0"
+              value={props.demoScenario}
+              onInput={(event) => props.setDemoScenario(event.currentTarget.value as DemoScenario)}
+            >
+              <For each={demoScenarios}>
+                {(scenario) => <option value={scenario.id}>{scenario.label}</option>}
+              </For>
+            </select>
+          </label>
           <Field label="Target URI" value={props.targetUrl} onInput={props.setTargetUrl} mono />
           <div class="grid grid-cols-2 gap-2">
             <Field
@@ -742,13 +775,11 @@ function EventStatusBadge(props: { event: CaptureEvent }) {
 function CapturePanel(props: {
   stats: CaptureStats | undefined;
   events: CaptureEvent[];
-  topics: TopicSummary[];
   onSelectEvent: (captureSeq: number) => void;
 }) {
   const issueCount = createMemo(() =>
     props.events.reduce((count, event) => count + (event.issues?.length ?? 0), 0),
   );
-  const staleTopicCount = createMemo(() => props.topics.filter((topic) => topic.stale).length);
   const issueSummaries = createMemo(() => recentIssueSummaries(props.events));
   return (
     <div class="grid min-h-0 grid-rows-[auto_1fr]">
@@ -758,11 +789,13 @@ function CapturePanel(props: {
         detail={`${props.stats?.issues ?? issueCount()} flagged`}
       />
       <div class="grid min-h-0 grid-rows-[auto_1fr]">
-        <div class="grid grid-cols-2 gap-px bg-neutral-800 p-px text-sm md:grid-cols-5">
+        <div class="grid grid-cols-2 gap-px bg-neutral-800 p-px text-sm md:grid-cols-4 xl:grid-cols-7">
           <MetricCard label="Connections" value={props.stats?.connections ?? 0} />
           <MetricCard label="Events" value={props.stats?.events ?? props.events.length} />
+          <MetricCard label="Retained" value={props.stats?.retainedEvents ?? props.events.length} />
+          <MetricCard label="Dropped" value={props.stats?.droppedEvents ?? 0} />
+          <MetricCard label="Capacity" value={props.stats?.bufferCapacity ?? 10_000} />
           <MetricCard label="Issues" value={props.stats?.issues ?? issueCount()} />
-          <MetricCard label="Stale" value={staleTopicCount()} />
           <MetricCard label="Clients" value={props.stats?.liveClients ?? 0} />
         </div>
         <div class="min-h-0 overflow-auto border-t border-neutral-800 p-3">
@@ -968,6 +1001,10 @@ function parseHeaders(value: string): Record<string, string> {
     }
   }
   return headers;
+}
+
+function demoStreamUrl(scenario: DemoScenario): string {
+  return `ws://localhost:8791/stream?scenario=${encodeURIComponent(scenario)}`;
 }
 
 function previewPayload(event: CaptureEvent): string {

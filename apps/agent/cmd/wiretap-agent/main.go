@@ -31,12 +31,14 @@ const (
 	defaultAddress       = "127.0.0.1:8790"
 	websocketGUID        = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 	maxBufferedEvents    = 10_000
+	liveClientBufferSize = 4_096
 	maxRawMessageBytes   = 1 << 20
 	rawPreviewBytes      = 16 << 10
 	reconnectDelay       = 1200 * time.Millisecond
 	staleTickInterval    = 500 * time.Millisecond
 	rateWindow           = time.Second
 	writeDeadlineTimeout = 5 * time.Second
+	statsBroadcastEvery  = 250 * time.Millisecond
 )
 
 type agent struct {
@@ -54,10 +56,12 @@ type agent struct {
 	eventCount      int64
 	issueCount      int64
 	nextCaptureSeq  int64
+	lastStatsSentAt time.Time
 	connectionID    string
 	events          []captureEvent
 	topics          *topicTracker
 	sequences       *sequenceTracker
+	recorder        *captureRecorder
 	session         *upstreamSession
 	subscribers     map[*liveClient]struct{}
 }
@@ -103,14 +107,17 @@ type agentStatus struct {
 }
 
 type captureStats struct {
-	Connections int64      `json:"connections"`
-	Events      int64      `json:"events"`
-	Issues      int64      `json:"issues"`
-	LiveClients int64      `json:"liveClients"`
-	UptimeMs    int64      `json:"uptimeMs"`
-	State       agentState `json:"state"`
-	TargetURL   string     `json:"targetUrl,omitempty"`
-	ConnectedAt string     `json:"connectedAt,omitempty"`
+	Connections    int64      `json:"connections"`
+	Events         int64      `json:"events"`
+	RetainedEvents int64      `json:"retainedEvents"`
+	DroppedEvents  int64      `json:"droppedEvents"`
+	BufferCapacity int64      `json:"bufferCapacity"`
+	Issues         int64      `json:"issues"`
+	LiveClients    int64      `json:"liveClients"`
+	UptimeMs       int64      `json:"uptimeMs"`
+	State          agentState `json:"state"`
+	TargetURL      string     `json:"targetUrl,omitempty"`
+	ConnectedAt    string     `json:"connectedAt,omitempty"`
 }
 
 type agentMessage struct {
@@ -150,6 +157,23 @@ type captureEvent struct {
 	Issues            []captureIssue   `json:"issues,omitempty"`
 }
 
+type wiretapExportEvent struct {
+	CaptureSeq        int64            `json:"captureSeq"`
+	ConnectionID      string           `json:"connectionId"`
+	ReceivedAt        int64            `json:"receivedAt"`
+	Direction         string           `json:"direction"`
+	Opcode            string           `json:"opcode"`
+	Raw               string           `json:"raw"`
+	RawBase64         string           `json:"rawBase64,omitempty"`
+	RawTruncated      bool             `json:"rawTruncated"`
+	Truncated         bool             `json:"truncated"`
+	Oversized         bool             `json:"oversized"`
+	OriginalSizeBytes int64            `json:"originalSizeBytes"`
+	SizeBytes         int64            `json:"sizeBytes"`
+	Parsed            *wiretapEnvelope `json:"parsed"`
+	ParseError        string           `json:"parseError,omitempty"`
+}
+
 type wiretapEnvelope struct {
 	Topic   string      `json:"topic"`
 	Type    string      `json:"type"`
@@ -183,25 +207,49 @@ type upstreamFrame struct {
 
 func main() {
 	address := flag.String("addr", defaultAddress, "HTTP listen address")
+	demoAddress := flag.String("demo-addr", "127.0.0.1:8791", "demo WebSocket listen address; use empty string to disable")
+	dataDir := flag.String("data-dir", os.Getenv("WIRETAP_DATA_DIR"), "capture database directory")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	agent := &agent{
-		id:          "wiretap-local-agent",
-		version:     "0.2.0",
-		startedAt:   time.Now().UTC(),
-		state:       stateReady,
-		topics:      newTopicTracker(),
-		sequences:   newSequenceTracker(),
-		subscribers: make(map[*liveClient]struct{}),
+	store, err := openCaptureStore(*dataDir)
+	if err != nil {
+		logger.Error("failed to open capture database", "error", err)
+		os.Exit(1)
 	}
+	snapshot, err := store.loadOrCreateCurrentSession()
+	if err != nil {
+		logger.Error("failed to load capture session", "error", err)
+		os.Exit(1)
+	}
+	agent := &agent{
+		id:             "wiretap-local-agent",
+		version:        "0.2.0",
+		startedAt:      time.Now().UTC(),
+		state:          stateReady,
+		eventCount:     snapshot.Session.EventCount,
+		issueCount:     snapshot.Session.IssueCount,
+		nextCaptureSeq: latestCaptureSeq(snapshot.Events),
+		events:         snapshot.Events,
+		topics:         newTopicTrackerFromSnapshot(snapshot.Topics),
+		sequences:      newSequenceTracker(),
+		recorder:       newCaptureRecorder(store, snapshot.Session),
+		subscribers:    make(map[*liveClient]struct{}),
+	}
+	agent.rebuildSequenceTrackerFromEvents()
 	go agent.runStaleEvaluator(context.Background())
+	if strings.TrimSpace(*demoAddress) != "" {
+		go runDemoStreamServer(*demoAddress, logger)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", agent.withCORS(agent.handleHealth))
 	mux.HandleFunc("/stats", agent.withCORS(agent.handleStats))
 	mux.HandleFunc("/events", agent.withCORS(agent.handleEvents))
 	mux.HandleFunc("/topics", agent.withCORS(agent.handleTopics))
+	mux.HandleFunc("/export/jsonl", agent.withCORS(agent.handleExportJSONL))
+	mux.HandleFunc("/sessions/current", agent.withCORS(agent.handleCurrentSession))
+	mux.HandleFunc("/sessions/current/events", agent.withCORS(agent.handleCurrentSessionEvents))
 	mux.HandleFunc("/connect", agent.withCORS(agent.handleConnect))
 	mux.HandleFunc("/disconnect", agent.withCORS(agent.handleDisconnect))
 	mux.HandleFunc("/reconnect", agent.withCORS(agent.handleReconnect))
@@ -255,6 +303,26 @@ func (a *agent) handleTopics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, a.topicSnapshot())
+}
+
+func (a *agent) handleExportJSONL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", exportFilename(time.Now().UTC())))
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+
+	encoder := json.NewEncoder(w)
+	for _, event := range a.exportSnapshot() {
+		if err := encoder.Encode(event); err != nil {
+			slog.Error("failed to write jsonl export", "error", err)
+			return
+		}
+	}
 }
 
 func (a *agent) handleConnect(w http.ResponseWriter, r *http.Request) {
@@ -312,6 +380,13 @@ func (a *agent) handleClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if a.recorder != nil {
+		if _, err := a.recorder.createSession(""); err != nil {
+			writeHTTPError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
 	a.mu.Lock()
 	a.events = nil
 	a.topics = newTopicTracker()
@@ -361,7 +436,7 @@ func (a *agent) handleLive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := &liveClient{send: make(chan []byte, 64)}
+	client := &liveClient{send: make(chan []byte, liveClientBufferSize)}
 	a.addSubscriber(client)
 	defer a.removeSubscriber(client)
 
@@ -400,6 +475,7 @@ func (a *agent) withCORS(next http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -438,6 +514,12 @@ func (a *agent) replaceSession(config connectRequest) *upstreamSession {
 	a.lastError = ""
 	a.connectedAt = nil
 	a.mu.Unlock()
+
+	if a.recorder != nil {
+		if err := a.recorder.updateTargetURL(config.URL); err != nil {
+			slog.Error("failed to update capture session target", "error", err)
+		}
+	}
 
 	return previous
 }
@@ -534,6 +616,12 @@ func (a *agent) captureFrames(ctx context.Context, conn *upstreamConn) error {
 func (a *agent) recordEvent(event captureEvent) {
 	var topic topicState
 	var hasTopic bool
+	var shouldBroadcastStats bool
+	var topics []topicState
+	var recorder *captureRecorder
+	var eventCount int64
+	var issueCount int64
+	var retainedCount int
 
 	a.mu.Lock()
 	a.ensureCaptureModulesLocked()
@@ -553,13 +641,31 @@ func (a *agent) recordEvent(event captureEvent) {
 		a.events = a.events[:maxBufferedEvents]
 	}
 	topic, hasTopic = a.topics.record(event)
+	topics = a.topics.snapshot(time.Now().UTC())
+	sortTopicsByID(topics)
+	recorder = a.recorder
+	eventCount = a.eventCount
+	issueCount = a.issueCount
+	retainedCount = len(a.events)
+	now := time.Now().UTC()
+	if a.lastStatsSentAt.IsZero() || now.Sub(a.lastStatsSentAt) >= statsBroadcastEvery {
+		a.lastStatsSentAt = now
+		shouldBroadcastStats = true
+	}
 	a.mu.Unlock()
 
+	if recorder != nil {
+		if err := recorder.recordEvent(event, topics, eventCount, issueCount, retainedCount); err != nil {
+			slog.Error("failed to persist capture event", "error", err)
+		}
+	}
 	a.broadcast(agentMessage{Type: "capture.event", Payload: event})
 	if hasTopic {
 		a.broadcast(agentMessage{Type: "topic.updated", Payload: topic})
 	}
-	a.broadcast(agentMessage{Type: "capture.stats", Payload: a.stats()})
+	if shouldBroadcastStats {
+		a.broadcast(agentMessage{Type: "capture.stats", Payload: a.stats()})
+	}
 }
 
 func (a *agent) runStaleEvaluator(ctx context.Context) {
@@ -577,12 +683,29 @@ func (a *agent) runStaleEvaluator(ctx context.Context) {
 }
 
 func (a *agent) evaluateStaleTopics(now time.Time) []topicState {
+	var topics []topicState
+	var recorder *captureRecorder
+	var issueCount int64
+	var retainedCount int
+
 	a.mu.Lock()
 	a.ensureCaptureModulesLocked()
 	result := a.topics.evaluateStale(now)
 	a.issueCount += result.issueDelta
+	if len(result.changed) > 0 {
+		topics = a.topics.snapshot(now)
+		sortTopicsByID(topics)
+		recorder = a.recorder
+		issueCount = a.issueCount
+		retainedCount = len(a.events)
+	}
 	a.mu.Unlock()
 
+	if recorder != nil && len(result.changed) > 0 {
+		if err := recorder.recordTopicSnapshot(topics, issueCount, retainedCount); err != nil {
+			slog.Error("failed to persist topic snapshot", "error", err)
+		}
+	}
 	for _, topic := range result.changed {
 		a.broadcast(agentMessage{Type: "topic.updated", Payload: topic})
 	}
@@ -645,28 +768,39 @@ func (a *agent) status() agentStatus {
 		TargetURL:   targetURL,
 		LastError:   lastError,
 		Endpoints: map[string]string{
-			"health":     "http://localhost:8790/health",
-			"stats":      "http://localhost:8790/stats",
-			"events":     "http://localhost:8790/events",
-			"topics":     "http://localhost:8790/topics",
-			"connect":    "http://localhost:8790/connect",
-			"disconnect": "http://localhost:8790/disconnect",
-			"reconnect":  "http://localhost:8790/reconnect",
-			"clear":      "http://localhost:8790/clear",
-			"live":       "ws://localhost:8790/live",
+			"health":        "http://localhost:8790/health",
+			"stats":         "http://localhost:8790/stats",
+			"events":        "http://localhost:8790/events",
+			"topics":        "http://localhost:8790/topics",
+			"exportJsonl":   "http://localhost:8790/export/jsonl",
+			"session":       "http://localhost:8790/sessions/current",
+			"sessionEvents": "http://localhost:8790/sessions/current/events",
+			"connect":       "http://localhost:8790/connect",
+			"disconnect":    "http://localhost:8790/disconnect",
+			"reconnect":     "http://localhost:8790/reconnect",
+			"clear":         "http://localhost:8790/clear",
+			"live":          "ws://localhost:8790/live",
 		},
 	}
 }
 
 func (a *agent) stats() captureStats {
 	a.mu.RLock()
+	retainedEvents := int64(len(a.events))
+	droppedEvents := a.eventCount - retainedEvents
+	if droppedEvents < 0 {
+		droppedEvents = 0
+	}
 	stats := captureStats{
-		Connections: a.connectionCount,
-		Events:      a.eventCount,
-		Issues:      a.issueCount,
-		LiveClients: a.liveClients.Load(),
-		UptimeMs:    a.uptimeMs(),
-		State:       a.state,
+		Connections:    a.connectionCount,
+		Events:         a.eventCount,
+		RetainedEvents: retainedEvents,
+		DroppedEvents:  droppedEvents,
+		BufferCapacity: maxBufferedEvents,
+		Issues:         a.issueCount,
+		LiveClients:    a.liveClients.Load(),
+		UptimeMs:       a.uptimeMs(),
+		State:          a.state,
 	}
 	if a.activeConfig != nil {
 		stats.TargetURL = a.activeConfig.URL
@@ -687,12 +821,54 @@ func (a *agent) eventSnapshot() []captureEvent {
 	return events
 }
 
+func (a *agent) exportSnapshot() []wiretapExportEvent {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	events := make([]wiretapExportEvent, 0, len(a.events))
+	for _, event := range a.events {
+		events = append(events, exportEvent(event))
+	}
+	return events
+}
+
 func (a *agent) topicSnapshot() []topicState {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.ensureCaptureModulesLocked()
 	return a.topics.snapshot(time.Now().UTC())
+}
+
+func exportEvent(event captureEvent) wiretapExportEvent {
+	return wiretapExportEvent{
+		CaptureSeq:        event.CaptureSeq,
+		ConnectionID:      event.ConnectionID,
+		ReceivedAt:        receivedAtMillis(event.ReceivedAt),
+		Direction:         event.Direction,
+		Opcode:            event.Opcode,
+		Raw:               event.Raw,
+		RawBase64:         event.RawBase64,
+		RawTruncated:      event.RawTruncated,
+		Truncated:         event.Truncated,
+		Oversized:         event.Oversized,
+		OriginalSizeBytes: event.OriginalSizeBytes,
+		SizeBytes:         event.SizeBytes,
+		Parsed:            event.Envelope,
+		ParseError:        event.ParseError,
+	}
+}
+
+func receivedAtMillis(value string) int64 {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return 0
+	}
+	return parsed.UnixMilli()
+}
+
+func exportFilename(now time.Time) string {
+	return "wiretap-capture-" + now.Format("20060102T150405Z") + ".jsonl"
 }
 
 func (a *agent) uptimeMs() int64 {
@@ -706,6 +882,28 @@ func (a *agent) ensureCaptureModulesLocked() {
 	if a.sequences == nil {
 		a.sequences = newSequenceTracker()
 	}
+}
+
+func (a *agent) rebuildSequenceTrackerFromEvents() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.ensureCaptureModulesLocked()
+	a.sequences = newSequenceTracker()
+	for _, event := range a.events {
+		eventCopy := event
+		a.sequences.detect(&eventCopy)
+	}
+}
+
+func latestCaptureSeq(events []captureEvent) int64 {
+	var latest int64
+	for _, event := range events {
+		if event.CaptureSeq > latest {
+			latest = event.CaptureSeq
+		}
+	}
+	return latest
 }
 
 func (a *agent) addSubscriber(client *liveClient) {
@@ -1237,7 +1435,7 @@ func websocketAccept(key string) string {
 	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
-func writeWebSocketText(conn net.Conn, payload []byte) error {
+func writeWebSocketText(conn interface{ Write([]byte) (int, error) }, payload []byte) error {
 	header := make([]byte, 10)
 	header[0] = 0x81
 
