@@ -4,13 +4,25 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { createServer } from "node:net";
 
-import { BrowserWindow, PATHS, Updater } from "electrobun/bun";
+import { BrowserWindow, PATHS, Updater, type WindowOptionsType } from "electrobun/bun";
 
 const DEV_SERVER_PORT = 3001;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
 const PREFERRED_AGENT_PORT = 8790;
 const PREFERRED_DEMO_PORT = 8791;
 const AGENT_HOST = "127.0.0.1";
+export const TRAFFIC_LIGHT_POSITION = {
+  x: 14,
+  y: 15,
+} as const;
+
+type TrafficLightPosition = typeof TRAFFIC_LIGHT_POSITION;
+type WindowOptionsWithTrafficLights = Partial<WindowOptionsType> & {
+  trafficLightOffset: TrafficLightPosition;
+};
+type TrafficLightWindow = BrowserWindow & {
+  setTrafficLightOffset?: (position: TrafficLightPosition) => void;
+};
 
 type DesktopAgent = {
   process: ReturnType<typeof Bun.spawn>;
@@ -44,7 +56,7 @@ async function getMainViewUrl(agent: DesktopAgent): Promise<string> {
 const agent = await startAgent();
 const url = await getMainViewUrl(agent);
 
-const window = new BrowserWindow({
+const windowOptions = {
   title: "wiretap",
   url,
   frame: {
@@ -54,7 +66,11 @@ const window = new BrowserWindow({
     y: 120,
   },
   titleBarStyle: "hiddenInset",
-});
+  trafficLightOffset: TRAFFIC_LIGHT_POSITION,
+} satisfies WindowOptionsWithTrafficLights;
+
+const window = new BrowserWindow(windowOptions);
+(window as TrafficLightWindow).setTrafficLightOffset?.(TRAFFIC_LIGHT_POSITION);
 
 window.on("close", () => stopAgent(agent, "window closed"));
 process.on("SIGINT", () => stopAgent(agent, "SIGINT"));
