@@ -63,6 +63,7 @@ func (a *agent) streamStatusesLocked() []streamStatus {
 		}
 		statuses = append(statuses, streamStatus{
 			ID:           stream.ID,
+			Transport:    stream.Transport,
 			URL:          stream.URL,
 			State:        stream.State,
 			LastError:    stream.LastError,
@@ -92,6 +93,9 @@ func (a *agent) rebuildStreamRuntimeFromEventsLocked() {
 		if stream == nil {
 			stream = &streamRuntime{ID: streamID, State: stateDisconnected}
 			a.streams[streamID] = stream
+		}
+		if event.Transport != "" {
+			stream.Transport = event.Transport
 		}
 		stream.Events++
 		stream.Issues += int64(len(event.Issues))

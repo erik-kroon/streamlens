@@ -37,11 +37,13 @@ export type AgentClientState = {
   reconnectUpstream: (streamId?: string) => Promise<void>;
   clearCapture: () => Promise<void>;
   exportJSONL: () => Promise<void>;
+  exportTape: () => Promise<void>;
   importJSONL: (file: File) => Promise<void>;
   refreshSessions: () => Promise<void>;
   openSession: (sessionId: string) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   exportSessionJSONL: (sessionId: string) => Promise<void>;
+  exportSessionTape: (sessionId: string) => Promise<void>;
   readExtractionRules: () => Promise<ExtractionRules>;
   saveExtractionRules: (rules: ExtractionRules) => Promise<ExtractionRules>;
 };
@@ -175,7 +177,7 @@ export function createAgentClient(): AgentClientState {
     setCurrentSession(currentPayload);
   };
 
-  const downloadJSONL = async (path: string, filename: string) => {
+  const downloadFile = async (path: string, filename: string) => {
     const response = await fetch(`${httpUrl}${path}`);
     if (!response.ok) {
       const payload: unknown = await response.json().catch(() => undefined);
@@ -370,7 +372,11 @@ export function createAgentClient(): AgentClientState {
     },
     exportJSONL: async () => {
       setError(undefined);
-      await downloadJSONL("/export/jsonl", exportFilename("capture"));
+      await downloadFile("/export/jsonl", exportFilename("capture", "jsonl"));
+    },
+    exportTape: async () => {
+      setError(undefined);
+      await downloadFile("/export/tape", exportFilename("capture", "tape"));
     },
     importJSONL: async (file) => {
       setError(undefined);
@@ -403,9 +409,16 @@ export function createAgentClient(): AgentClientState {
     },
     exportSessionJSONL: async (sessionId) => {
       setError(undefined);
-      await downloadJSONL(
+      await downloadFile(
         `/sessions/${encodeURIComponent(sessionId)}/export/jsonl`,
-        exportFilename(sessionId),
+        exportFilename(sessionId, "jsonl"),
+      );
+    },
+    exportSessionTape: async (sessionId) => {
+      setError(undefined);
+      await downloadFile(
+        `/sessions/${encodeURIComponent(sessionId)}/export/tape`,
+        exportFilename(sessionId, "tape"),
       );
     },
     readExtractionRules,
@@ -444,9 +457,9 @@ function normalizeHttpUrl(value: unknown): string {
   return value.replace(/\/$/, "");
 }
 
-function exportFilename(label: string): string {
+function exportFilename(label: string, extension: "jsonl" | "tape"): string {
   const safeLabel = label.replace(/[^a-zA-Z0-9_-]/g, "-");
-  return `wiretap-${safeLabel}-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`;
+  return `wiretap-${safeLabel}-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
 }
 
 function streamControlPath(path: string, streamId: string | undefined): string {

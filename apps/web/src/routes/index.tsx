@@ -3,11 +3,13 @@ import {
   Activity,
   AlertTriangle,
   Ban,
+  BarChart3,
   Clock3,
   Database,
   Download,
   Eraser,
   FolderOpen,
+  GitCompare,
   Link,
   Pause,
   Play,
@@ -34,8 +36,12 @@ import {
   formatIssueCode,
   maxCaptureSeq,
   recentIssueSummaries,
+  summarizeLatency,
   summarizeAgentTopics,
+  summarizeStreamDiff,
   summarizeTopics,
+  type LatencyAnalytics,
+  type StreamDiffSummary,
   type TopicSummary,
 } from "@/lib/capture-view-model";
 import type {
@@ -44,6 +50,7 @@ import type {
   CaptureIssue,
   CaptureSession,
   CaptureStats,
+  CaptureTransport,
   ExtractionRules,
   StreamStatus,
 } from "@/lib/agent-protocol";
@@ -63,6 +70,8 @@ const demoScenarios = [
 ] as const;
 
 type DemoScenario = (typeof demoScenarios)[number]["id"];
+type ReplaySpeed = 0.25 | 0.5 | 1 | 2 | 4 | 8;
+type UpstreamTransport = "websocket" | "sse";
 
 const defaultExtractionRules: ExtractionRules = {
   topicPath: "topic",
@@ -71,6 +80,56 @@ const defaultExtractionRules: ExtractionRules = {
   timestampPath: "ts",
   payloadPath: "payload",
   keyPaths: ["key", "symbol"],
+  otel: {
+    traceIdPaths: [
+      "traceId",
+      "trace_id",
+      "trace.id",
+      "context.traceId",
+      "context.trace_id",
+      "payload.traceId",
+      "payload.trace_id",
+      "payload.trace.id",
+    ],
+    spanIdPaths: [
+      "spanId",
+      "span_id",
+      "span.id",
+      "context.spanId",
+      "context.span_id",
+      "payload.spanId",
+      "payload.span_id",
+      "payload.span.id",
+    ],
+    parentSpanIdPaths: [
+      "parentSpanId",
+      "parent_span_id",
+      "parent.spanId",
+      "parent.span_id",
+      "payload.parentSpanId",
+      "payload.parent_span_id",
+    ],
+    traceparentPaths: ["traceparent", "context.traceparent", "payload.traceparent"],
+    traceStatePaths: [
+      "tracestate",
+      "traceState",
+      "context.tracestate",
+      "context.traceState",
+      "payload.tracestate",
+      "payload.traceState",
+    ],
+    logIdPaths: ["logId", "log_id", "log.id", "payload.logId", "payload.log_id", "payload.log.id"],
+    serviceNamePaths: [
+      "service.name",
+      "serviceName",
+      "service_name",
+      "resource.service.name",
+      "resource.attributes.service.name",
+      "payload.service.name",
+      "payload.serviceName",
+      "payload.service_name",
+    ],
+  },
   schemaPlugins: [],
   sandboxBoundary: "declarative-json-rules-only",
 };
@@ -79,9 +138,12 @@ function App() {
   const agent = createAgentClient();
   const agentView = createAgentDerivedState(agent);
   const [demoScenario, setDemoScenario] = createSignal<DemoScenario>("normal");
-  const [targetUrl, setTargetUrl] = createSignal(demoStreamUrl("normal"));
+  const [transport, setTransport] = createSignal<UpstreamTransport>("websocket");
+  const [targetUrl, setTargetUrl] = createSignal(demoStreamUrl("normal", "websocket"));
   const [streamId, setStreamId] = createSignal("default");
   const [streamFilter, setStreamFilter] = createSignal("all");
+  const [diffBaseStream, setDiffBaseStream] = createSignal("default");
+  const [diffCompareStream, setDiffCompareStream] = createSignal("");
   const [headersText, setHeadersText] = createSignal("");
   const [bearerToken, setBearerToken] = createSignal("");
   const [apiKeyHeader, setApiKeyHeader] = createSignal("x-api-key");
@@ -95,6 +157,10 @@ function App() {
   const [liveFollowPaused, setLiveFollowPaused] = createSignal(false);
   const [pausedAfterSeq, setPausedAfterSeq] = createSignal(0);
   const [followVersion, setFollowVersion] = createSignal(0);
+  const [replayEnabled, setReplayEnabled] = createSignal(false);
+  const [replayPlaying, setReplayPlaying] = createSignal(false);
+  const [replaySpeed, setReplaySpeed] = createSignal<ReplaySpeed>(1);
+  const [replayClockMs, setReplayClockMs] = createSignal(0);
   const [extractionRulesText, setExtractionRulesText] = createSignal(
     JSON.stringify(defaultExtractionRules, null, 2),
   );
@@ -111,7 +177,40 @@ function App() {
   });
 
   const events = createMemo(() => agent.events());
+  const replayTimeline = createMemo(() =>
+    [...events()].sort((a, b) => a.captureSeq - b.captureSeq),
+  );
+  const replayCursorIndex = createMemo(() => {
+    const timeline = replayTimeline();
+    if (!replayEnabled() || timeline.length === 0) {
+      return -1;
+    }
+
+    const clock = replayClockMs();
+    let cursor = -1;
+    for (let index = 0; index < timeline.length; index += 1) {
+      if (eventReplayTimeMs(timeline[index], index) > clock) {
+        break;
+      }
+      cursor = index;
+    }
+    return Math.max(0, cursor);
+  });
+  const replayCursorEvent = createMemo(() => replayTimeline()[replayCursorIndex()]);
+  const replayedEvents = createMemo(() => {
+    if (!replayEnabled()) {
+      return events();
+    }
+    const cursor = replayCursorIndex();
+    if (cursor < 0) {
+      return [];
+    }
+    return replayTimeline().slice(0, cursor + 1);
+  });
   const selectedEvent = createMemo(() => {
+    if (replayEnabled()) {
+      return replayCursorEvent();
+    }
     const selected = selectedSeq();
     return events().find((event) => event.captureSeq === selected) ?? events().at(-1);
   });
@@ -135,6 +234,10 @@ function App() {
         event.displayType,
         event.eventType,
         event.effectiveKey,
+        event.correlation?.traceId,
+        event.correlation?.spanId,
+        event.correlation?.logId,
+        event.correlation?.serviceName,
         eventScopeLabel(event),
         event.raw,
         event.rawBase64,
@@ -145,11 +248,26 @@ function App() {
   });
   const latestFilteredEvent = createMemo(() => filteredEvents().at(-1));
   const latestCaptureSeq = createMemo(() => maxCaptureSeq(events()));
+  const analyticsEvents = createMemo(() => {
+    const selectedStream = streamFilter();
+    const sourceEvents = replayEnabled() ? replayedEvents() : events();
+    return selectedStream === "all"
+      ? sourceEvents
+      : sourceEvents.filter((event) => (event.streamId ?? "default") === selectedStream);
+  });
+  const latencyAnalytics = createMemo(() => summarizeLatency(analyticsEvents()));
   const bufferedSincePause = createMemo(() =>
     liveFollowPaused() ? events().filter((event) => event.captureSeq > pausedAfterSeq()).length : 0,
   );
   const topics = createMemo(() => {
     const selectedStream = streamFilter();
+    if (replayEnabled()) {
+      const replayedForStream =
+        selectedStream === "all"
+          ? replayedEvents()
+          : replayedEvents().filter((event) => (event.streamId ?? "default") === selectedStream);
+      return summarizeTopics(replayedForStream, replayClockMs());
+    }
     const agentTopics = agent.topics();
     const visibleAgentTopics =
       selectedStream === "all"
@@ -161,6 +279,36 @@ function App() {
     return summarizeTopics(filteredEvents(), now());
   });
   const streams = createMemo(() => agent.stats()?.streams ?? agent.status()?.streams ?? []);
+  const streamIds = createMemo(() => {
+    const ids = new Set<string>();
+    for (const stream of streams()) {
+      ids.add(stream.id);
+    }
+    for (const event of events()) {
+      ids.add(event.streamId ?? "default");
+    }
+    return [...ids].sort();
+  });
+  createEffect(() => {
+    const ids = streamIds();
+    if (ids.length === 0) {
+      return;
+    }
+    if (!ids.includes(diffBaseStream())) {
+      setDiffBaseStream(ids[0]);
+    }
+    if (!diffCompareStream() || !ids.includes(diffCompareStream())) {
+      setDiffCompareStream(ids.find((id) => id !== diffBaseStream()) ?? ids[0]);
+    }
+  });
+  const streamDiff = createMemo(() => {
+    const base = diffBaseStream();
+    const compare = diffCompareStream();
+    if (!base || !compare || base === compare) {
+      return undefined;
+    }
+    return summarizeStreamDiff(events(), base, compare);
+  });
   const endpoints = createMemo(() => {
     const status = agent.status();
     return status ? Object.entries(status.endpoints) : [];
@@ -179,6 +327,7 @@ function App() {
     runControl(() =>
       agent.connectUpstream({
         streamId: streamId(),
+        transport: transport(),
         url: targetUrl(),
         headers: parseHeaders(headersText()),
         bearerToken: bearerToken(),
@@ -194,17 +343,46 @@ function App() {
 
   const selectDemoScenario = (scenario: DemoScenario) => {
     setDemoScenario(scenario);
-    setTargetUrl(demoStreamUrl(scenario));
+    setTargetUrl(demoStreamUrl(scenario, transport()));
+  };
+
+  const selectTransport = (value: UpstreamTransport) => {
+    setTransport(value);
+    setTargetUrl(demoStreamUrl(demoScenario(), value));
   };
 
   createEffect(() => {
-    if (liveFollowPaused()) {
+    if (liveFollowPaused() || replayEnabled()) {
       return;
     }
     const latest = latestFilteredEvent();
     if (latest && selectedSeq() !== latest.captureSeq) {
       setSelectedSeq(latest.captureSeq);
     }
+  });
+
+  createEffect(() => {
+    const timeline = replayTimeline();
+    if (!replayEnabled() || !replayPlaying() || timeline.length === 0) {
+      return;
+    }
+
+    let lastTick = Date.now();
+    const interval = window.setInterval(() => {
+      const nowMs = Date.now();
+      const elapsedMs = nowMs - lastTick;
+      lastTick = nowMs;
+      const endMs = eventReplayTimeMs(timeline[timeline.length - 1], timeline.length - 1);
+      setReplayClockMs((clock) => {
+        const nextClock = Math.min(endMs, clock + elapsedMs * replaySpeed());
+        if (nextClock >= endMs) {
+          setReplayPlaying(false);
+        }
+        return nextClock;
+      });
+    }, 50);
+
+    onCleanup(() => window.clearInterval(interval));
   });
 
   const pauseLiveFollow = () => {
@@ -222,10 +400,50 @@ function App() {
   };
 
   const selectEvent = (captureSeq: number) => {
+    if (replayEnabled()) {
+      const index = replayTimeline().findIndex((event) => event.captureSeq === captureSeq);
+      if (index !== -1) {
+        setReplayClockMs(eventReplayTimeMs(replayTimeline()[index], index));
+      }
+      return;
+    }
     setSelectedSeq(captureSeq);
     const latest = latestFilteredEvent();
     if (!liveFollowPaused() && latest && captureSeq !== latest.captureSeq) {
       pauseLiveFollow();
+    }
+  };
+
+  const startReplay = () => {
+    const timeline = replayTimeline();
+    if (timeline.length === 0) {
+      return;
+    }
+    const selected = selectedSeq();
+    const selectedIndex = timeline.findIndex((event) => event.captureSeq === selected);
+    const startIndex = selectedIndex === -1 ? 0 : selectedIndex;
+    setReplayEnabled(true);
+    setReplayClockMs(eventReplayTimeMs(timeline[startIndex], startIndex));
+    setReplayPlaying(true);
+    setLiveFollowPaused(true);
+    setPausedAfterSeq(latestCaptureSeq());
+  };
+
+  const stopReplay = () => {
+    const current = replayCursorEvent();
+    setReplayPlaying(false);
+    setReplayEnabled(false);
+    if (current) {
+      setSelectedSeq(current.captureSeq);
+    }
+  };
+
+  const seekReplay = (index: number) => {
+    const timeline = replayTimeline();
+    const nextIndex = Math.min(Math.max(index, 0), Math.max(0, timeline.length - 1));
+    const event = timeline[nextIndex];
+    if (event) {
+      setReplayClockMs(eventReplayTimeMs(event, nextIndex));
     }
   };
 
@@ -235,16 +453,21 @@ function App() {
       setSelectedSeq(undefined);
       setPausedAfterSeq(0);
       setLiveFollowPaused(false);
+      setReplayEnabled(false);
+      setReplayPlaying(false);
       setFollowVersion((version) => version + 1);
     });
 
   const exportCapture = () => runControl(agent.exportJSONL);
+  const exportTape = () => runControl(agent.exportTape);
   const importCapture = (file: File) =>
     runControl(async () => {
       await agent.importJSONL(file);
       setSelectedSeq(undefined);
       setPausedAfterSeq(0);
       setLiveFollowPaused(false);
+      setReplayEnabled(false);
+      setReplayPlaying(false);
       setFollowVersion((version) => version + 1);
     });
   const refreshSessions = () => runControl(agent.refreshSessions);
@@ -254,6 +477,8 @@ function App() {
       setSelectedSeq(undefined);
       setPausedAfterSeq(0);
       setLiveFollowPaused(false);
+      setReplayEnabled(false);
+      setReplayPlaying(false);
       setFollowVersion((version) => version + 1);
     });
   const deleteSavedSession = (sessionId: string) =>
@@ -262,10 +487,14 @@ function App() {
       setSelectedSeq(undefined);
       setPausedAfterSeq(0);
       setLiveFollowPaused(false);
+      setReplayEnabled(false);
+      setReplayPlaying(false);
       setFollowVersion((version) => version + 1);
     });
   const exportSavedSession = (sessionId: string) =>
     runControl(() => agent.exportSessionJSONL(sessionId));
+  const exportSavedSessionTape = (sessionId: string) =>
+    runControl(() => agent.exportSessionTape(sessionId));
   const saveExtractionRules = () =>
     runControl(async () => {
       const parsed = JSON.parse(extractionRulesText()) as ExtractionRules;
@@ -321,6 +550,8 @@ function App() {
             streams={streams()}
             streamId={streamId()}
             setStreamId={setStreamId}
+            transport={transport()}
+            setTransport={selectTransport}
             targetUrl={targetUrl()}
             setTargetUrl={setTargetUrl}
             demoScenario={demoScenario()}
@@ -343,6 +574,7 @@ function App() {
             openSession={openSavedSession}
             deleteSession={deleteSavedSession}
             exportSession={exportSavedSession}
+            exportSessionTape={exportSavedSessionTape}
             extractionRulesText={extractionRulesText()}
             setExtractionRulesText={setExtractionRulesText}
             saveExtractionRules={saveExtractionRules}
@@ -384,7 +616,21 @@ function App() {
                 onClick={liveFollowPaused() ? resumeLiveFollow : pauseLiveFollow}
                 primary={liveFollowPaused()}
               />
+              <ReplayControls
+                events={replayTimeline()}
+                enabled={replayEnabled()}
+                playing={replayPlaying()}
+                speed={replaySpeed()}
+                cursorIndex={replayCursorIndex()}
+                clockMs={replayClockMs()}
+                onStart={startReplay}
+                onStop={stopReplay}
+                onTogglePlaying={() => setReplayPlaying((playing) => !playing)}
+                onSeek={seekReplay}
+                onSpeedChange={setReplaySpeed}
+              />
               <IconTextButton icon={Download} label="Export JSONL" onClick={exportCapture} />
+              <IconTextButton icon={Download} label="Export Tape" onClick={exportTape} />
               <FileImportButton onImport={importCapture} />
               <IconTextButton icon={Eraser} label="Clear" onClick={clearCapture} />
             </div>
@@ -394,6 +640,9 @@ function App() {
               isLiveFollowPaused={liveFollowPaused()}
               followVersion={followVersion()}
               selectedSeq={selectedEvent()?.captureSeq}
+              replayEnabled={replayEnabled()}
+              replayCursorSeq={replayCursorEvent()?.captureSeq}
+              replayedThroughSeq={replayCursorEvent()?.captureSeq}
               onSelect={selectEvent}
             />
           </section>
@@ -403,14 +652,28 @@ function App() {
               icon={Server}
               title="Payload Inspector"
               detail={
-                selectedEvent() ? `Capture #${selectedEvent()?.captureSeq}` : "No event selected"
+                selectedEvent()
+                  ? replayEnabled()
+                    ? `Replay #${selectedEvent()?.captureSeq}`
+                    : `Capture #${selectedEvent()?.captureSeq}`
+                  : "No event selected"
               }
             />
             <Inspector event={selectedEvent()} />
           </aside>
 
-          <section class="grid min-h-0 min-w-0 grid-cols-1 border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:col-end-4 lg:row-start-2 lg:grid-cols-[300px_minmax(0,1fr)] lg:border-l lg:border-t lg:border-b-0">
+          <section class="grid min-h-0 min-w-0 grid-cols-1 border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:col-end-4 lg:row-start-2 lg:grid-cols-[280px_340px_360px_minmax(0,1fr)] lg:border-l lg:border-t lg:border-b-0">
             <TopicPanel topics={topics()} activeFilter={filter()} onFilterTopic={setFilter} />
+            <LatencyPanel analytics={latencyAnalytics()} onSelectEvent={selectEvent} />
+            <StreamDiffPanel
+              streams={streamIds()}
+              baseStream={diffBaseStream()}
+              compareStream={diffCompareStream()}
+              summary={streamDiff()}
+              onBaseChange={setDiffBaseStream}
+              onCompareChange={setDiffCompareStream}
+              onSelectEvent={selectEvent}
+            />
             <CapturePanel stats={agent.stats()} events={events()} onSelectEvent={selectEvent} />
           </section>
         </section>
@@ -445,6 +708,8 @@ type AgentPanelProps = {
   streams: StreamStatus[];
   streamId: string;
   setStreamId: (value: string) => void;
+  transport: UpstreamTransport;
+  setTransport: (value: UpstreamTransport) => void;
   targetUrl: string;
   setTargetUrl: (value: string) => void;
   demoScenario: DemoScenario;
@@ -467,6 +732,7 @@ type AgentPanelProps = {
   openSession: (sessionId: string) => void;
   deleteSession: (sessionId: string) => void;
   exportSession: (sessionId: string) => void;
+  exportSessionTape: (sessionId: string) => void;
   extractionRulesText: string;
   setExtractionRulesText: (value: string) => void;
   saveExtractionRules: () => void;
@@ -503,6 +769,7 @@ function AgentPanel(props: AgentPanelProps) {
           onOpen={props.openSession}
           onDelete={props.deleteSession}
           onExport={props.exportSession}
+          onExportTape={props.exportSessionTape}
         />
 
         <StreamList streams={props.streams} />
@@ -530,7 +797,22 @@ function AgentPanel(props: AgentPanelProps) {
               </For>
             </select>
           </label>
-          <Field label="Stream ID" value={props.streamId} onInput={props.setStreamId} mono />
+          <div class="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-2">
+            <Field label="Stream ID" value={props.streamId} onInput={props.setStreamId} mono />
+            <label class="grid min-w-0 gap-1">
+              <span class="truncate text-xs text-neutral-500">Transport</span>
+              <select
+                class="field w-full min-w-0"
+                value={props.transport}
+                onInput={(event) =>
+                  props.setTransport(event.currentTarget.value as UpstreamTransport)
+                }
+              >
+                <option value="websocket">WebSocket</option>
+                <option value="sse">SSE</option>
+              </select>
+            </label>
+          </div>
           <Field label="Target URI" value={props.targetUrl} onInput={props.setTargetUrl} mono />
           <div class="grid grid-cols-2 gap-2">
             <Field
@@ -605,6 +887,7 @@ function SessionLibrary(props: {
   onOpen: (sessionId: string) => void;
   onDelete: (sessionId: string) => void;
   onExport: (sessionId: string) => void;
+  onExportTape: (sessionId: string) => void;
 }) {
   return (
     <div class="space-y-2 rounded-md border border-neutral-800 bg-neutral-900/50 p-3">
@@ -658,7 +941,7 @@ function SessionLibrary(props: {
                       </span>
                     </div>
                   </button>
-                  <div class="grid grid-cols-3 gap-1">
+                  <div class="grid grid-cols-4 gap-1">
                     <MiniIconButton
                       icon={FolderOpen}
                       label="Open"
@@ -666,8 +949,13 @@ function SessionLibrary(props: {
                     />
                     <MiniIconButton
                       icon={Download}
-                      label="Export"
+                      label="JSONL"
                       onClick={() => props.onExport(session.id)}
+                    />
+                    <MiniIconButton
+                      icon={Download}
+                      label="Tape"
+                      onClick={() => props.onExportTape(session.id)}
                     />
                     <MiniIconButton
                       icon={Trash2}
@@ -703,7 +991,14 @@ function StreamList(props: { streams: StreamStatus[] }) {
               <div class="grid gap-1 rounded-md border border-neutral-800 bg-neutral-950/45 p-2">
                 <div class="flex min-w-0 items-center justify-between gap-2">
                   <span class="truncate font-mono text-xs text-neutral-200">{stream.id}</span>
-                  <StatusPill online={stream.state === "connected"} label={stream.state} compact />
+                  <div class="flex min-w-0 items-center gap-1">
+                    <span class="badge-muted shrink-0">{formatTransport(stream.transport)}</span>
+                    <StatusPill
+                      online={stream.state === "connected"}
+                      label={stream.state}
+                      compact
+                    />
+                  </div>
                 </div>
                 <div class="truncate font-mono text-xs text-neutral-500">
                   {stream.url ?? "No URL"}
@@ -756,6 +1051,9 @@ function VirtualEventTable(props: {
   isLiveFollowPaused: boolean;
   followVersion: number;
   selectedSeq: number | undefined;
+  replayEnabled: boolean;
+  replayCursorSeq: number | undefined;
+  replayedThroughSeq: number | undefined;
   onSelect: (captureSeq: number) => void;
 }) {
   const rowHeight = 34;
@@ -809,7 +1107,7 @@ function VirtualEventTable(props: {
     <div class="grid min-h-0 grid-rows-[34px_1fr]">
       <div class="event-grid border-b border-neutral-800 bg-neutral-900/70 text-xs font-medium uppercase text-neutral-500">
         <span>Seq</span>
-        <span>Stream</span>
+        <span>Stream / transport</span>
         <span>Received</span>
         <span>Topic</span>
         <span>Status</span>
@@ -831,13 +1129,19 @@ function VirtualEventTable(props: {
                     type="button"
                     class={`event-grid row-button ${eventIndex() % 2 === 1 ? "odd-row" : ""} ${
                       props.selectedSeq === event.captureSeq ? "selected" : ""
-                    } ${event.issues?.length ? "issue-row" : ""}`}
+                    } ${event.issues?.length ? "issue-row" : ""} ${
+                      props.replayEnabled &&
+                      props.replayedThroughSeq !== undefined &&
+                      event.captureSeq > props.replayedThroughSeq
+                        ? "future-row"
+                        : ""
+                    }`}
                     style={{ transform: `translateY(${eventIndex() * rowHeight}px)` }}
                     onClick={() => props.onSelect(event.captureSeq)}
                   >
                     <span class="font-mono text-neutral-300">{event.captureSeq}</span>
                     <span class="truncate font-mono text-neutral-500">
-                      {event.streamId ?? "default"}
+                      {event.streamId ?? "default"} / {formatTransport(event.transport)}
                     </span>
                     <span class="font-mono text-neutral-400">
                       {formatEventTime(event.receivedAt)}
@@ -846,7 +1150,15 @@ function VirtualEventTable(props: {
                       {event.displayTopic ?? event.topic ?? "unknown"}
                     </span>
                     <span>
-                      <EventStatusBadge event={event} />
+                      <EventStatusBadge
+                        event={event}
+                        replayState={eventReplayState(
+                          event,
+                          props.replayEnabled,
+                          props.replayCursorSeq,
+                          props.replayedThroughSeq,
+                        )}
+                      />
                     </span>
                     <span
                       class={
@@ -871,13 +1183,14 @@ function VirtualEventTable(props: {
   );
 }
 
-type InspectorTab = "parsed" | "payload" | "raw" | "issues" | "metadata";
+type InspectorTab = "parsed" | "payload" | "correlation" | "raw" | "issues" | "metadata";
 
 function Inspector(props: { event: CaptureEvent | undefined }) {
   const [tab, setTab] = createSignal<InspectorTab>("payload");
   const tabs: { id: InspectorTab; label: string }[] = [
     { id: "parsed", label: "Parsed" },
     { id: "payload", label: "Payload" },
+    { id: "correlation", label: "Trace" },
     { id: "raw", label: "Raw" },
     { id: "issues", label: "Issues" },
     { id: "metadata", label: "Metadata" },
@@ -915,6 +1228,10 @@ function Inspector(props: { event: CaptureEvent | undefined }) {
                 {event().sizeBytes}
                 <Show when={event().rawTruncated}> / {event().originalSizeBytes}</Show>
               </dd>
+              <dt class="text-neutral-500">Trace</dt>
+              <dd class="truncate text-right font-mono text-neutral-300">
+                {event().correlation?.traceId ?? "none"}
+              </dd>
             </dl>
           </div>
           <div class="flex min-w-0 gap-1 border-b border-neutral-800 bg-neutral-900/50 p-1">
@@ -941,12 +1258,82 @@ function Inspector(props: { event: CaptureEvent | undefined }) {
                 </div>
               </Show>
             </Show>
+            <Show when={tab() === "correlation"}>
+              <CorrelationPanel event={event()} />
+            </Show>
             <Show when={tab() !== "issues"}>
-              <pre class="min-h-[180px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-5 text-neutral-200">
-                {formatInspectorTab(event(), tab())}
-              </pre>
+              <Show when={tab() !== "correlation"}>
+                <pre class="min-h-[180px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-5 text-neutral-200">
+                  {formatInspectorTab(event(), tab())}
+                </pre>
+              </Show>
             </Show>
           </div>
+        </div>
+      )}
+    </Show>
+  );
+}
+
+function CorrelationPanel(props: { event: CaptureEvent }) {
+  const correlation = () => props.event.correlation;
+  return (
+    <Show
+      when={correlation()}
+      fallback={<div class="text-sm text-neutral-500">No trace or log correlation fields.</div>}
+    >
+      {(value) => (
+        <div class="grid gap-3">
+          <dl class="grid grid-cols-[104px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
+            <dt class="text-neutral-500">Trace ID</dt>
+            <dd class="truncate font-mono text-neutral-100">{value().traceId ?? "--"}</dd>
+            <dt class="text-neutral-500">Span ID</dt>
+            <dd class="truncate font-mono text-neutral-200">{value().spanId ?? "--"}</dd>
+            <dt class="text-neutral-500">Parent span</dt>
+            <dd class="truncate font-mono text-neutral-300">{value().parentSpanId ?? "--"}</dd>
+            <dt class="text-neutral-500">Log ID</dt>
+            <dd class="truncate font-mono text-neutral-300">{value().logId ?? "--"}</dd>
+            <dt class="text-neutral-500">Service</dt>
+            <dd class="truncate font-mono text-neutral-300">{value().serviceName ?? "--"}</dd>
+            <dt class="text-neutral-500">Source</dt>
+            <dd class="truncate font-mono text-neutral-400">{value().source ?? "--"}</dd>
+          </dl>
+          <Show when={value().traceQueryUrl || value().logQueryUrl || value().otlpEndpoint}>
+            <div class="grid gap-2 rounded-md border border-neutral-800 bg-neutral-900/50 p-3 text-xs">
+              <Show when={value().traceQueryUrl}>
+                {(href) => (
+                  <a
+                    class="truncate font-mono text-cyan-200 hover:text-cyan-100"
+                    href={href()}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    trace query: {href()}
+                  </a>
+                )}
+              </Show>
+              <Show when={value().logQueryUrl}>
+                {(href) => (
+                  <a
+                    class="truncate font-mono text-cyan-200 hover:text-cyan-100"
+                    href={href()}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    log query: {href()}
+                  </a>
+                )}
+              </Show>
+              <Show when={value().otlpEndpoint}>
+                {(endpoint) => (
+                  <span class="truncate font-mono text-neutral-400">otlp: {endpoint()}</span>
+                )}
+              </Show>
+            </div>
+          </Show>
+          <pre class="min-h-[120px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-5 text-neutral-300">
+            {stringifyInspectorValue(value())}
+          </pre>
         </div>
       )}
     </Show>
@@ -1051,9 +1438,266 @@ function TopicMetric(props: { label: string; value: string }) {
   );
 }
 
-function EventStatusBadge(props: { event: CaptureEvent }) {
+function LatencyPanel(props: {
+  analytics: LatencyAnalytics;
+  onSelectEvent: (captureSeq: number) => void;
+}) {
+  const sourceLagCoverage = createMemo(() =>
+    props.analytics.eventCount === 0
+      ? "No source timestamps"
+      : `${formatCount(props.analytics.sourceLag.sampleCount)} / ${formatCount(
+          props.analytics.eventCount,
+        )} stamped`,
+  );
+
+  return (
+    <div class="min-h-0 border-b border-neutral-800 lg:border-r lg:border-b-0">
+      <PanelHeader icon={BarChart3} title="Latency" detail={sourceLagCoverage()} />
+      <Show
+        when={
+          props.analytics.sourceLag.sampleCount > 0 ||
+          props.analytics.receiveInterval.sampleCount > 0
+        }
+        fallback={
+          <EmptyPanel
+            icon={BarChart3}
+            title="No latency samples"
+            detail="Source lag needs extracted timestamps; receive intervals appear after two events."
+          />
+        }
+      >
+        <div class="grid max-h-full gap-3 overflow-auto p-3">
+          <LatencyMetricBlock
+            title="Source Lag"
+            summary={props.analytics.sourceLag}
+            buckets={props.analytics.sourceLagBuckets}
+          />
+          <LatencyMetricBlock
+            title="Receive Interval"
+            summary={props.analytics.receiveInterval}
+            buckets={props.analytics.receiveIntervalBuckets}
+          />
+          <div class="grid gap-2">
+            <LatencyHotspotButton
+              label="Worst lag"
+              hotspot={props.analytics.worstSourceLag}
+              onSelect={props.onSelectEvent}
+            />
+            <LatencyHotspotButton
+              label="Longest interval"
+              hotspot={props.analytics.longestReceiveInterval}
+              onSelect={props.onSelectEvent}
+            />
+          </div>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+function LatencyMetricBlock(props: {
+  title: string;
+  summary: LatencyAnalytics["sourceLag"];
+  buckets: LatencyAnalytics["sourceLagBuckets"];
+}) {
+  return (
+    <div class="grid gap-2 rounded-md border border-neutral-800 bg-neutral-900/55 p-3">
+      <div class="flex min-w-0 items-center justify-between gap-2">
+        <span class="truncate text-xs font-medium uppercase text-neutral-500">{props.title}</span>
+        <span class="font-mono text-xs text-neutral-500">
+          {formatCount(props.summary.sampleCount)} samples
+        </span>
+      </div>
+      <div class="grid grid-cols-3 gap-2 text-xs">
+        <TopicMetric label="P50" value={formatLatencyValue(props.summary.p50Ms)} />
+        <TopicMetric label="P95" value={formatLatencyValue(props.summary.p95Ms)} />
+        <TopicMetric label="Max" value={formatLatencyValue(props.summary.maxMs)} />
+      </div>
+      <HistogramBars buckets={props.buckets} />
+    </div>
+  );
+}
+
+function HistogramBars(props: { buckets: LatencyAnalytics["sourceLagBuckets"] }) {
+  const maxCount = createMemo(() => Math.max(1, ...props.buckets.map((bucket) => bucket.count)));
+  return (
+    <div class="grid grid-cols-9 items-end gap-1 pt-1">
+      <For each={props.buckets}>
+        {(bucket) => (
+          <div class="grid min-w-0 gap-1">
+            <div class="flex h-16 items-end rounded-sm bg-neutral-950/70 px-0.5">
+              <div
+                class="w-full rounded-sm bg-teal-300/70"
+                style={{
+                  height: `${Math.max(4, Math.round((bucket.count / maxCount()) * 64))}px`,
+                  opacity: bucket.count === 0 ? 0.28 : 1,
+                }}
+                title={`${bucket.label}: ${formatCount(bucket.count)}`}
+              />
+            </div>
+            <span class="truncate text-center font-mono text-[10px] text-neutral-600">
+              {bucket.label}
+            </span>
+          </div>
+        )}
+      </For>
+    </div>
+  );
+}
+
+function LatencyHotspotButton(props: {
+  label: string;
+  hotspot: LatencyAnalytics["worstSourceLag"];
+  onSelect: (captureSeq: number) => void;
+}) {
+  return (
+    <Show
+      when={props.hotspot}
+      fallback={
+        <div class="grid gap-1 rounded-md border border-neutral-800 bg-neutral-950/45 p-2 text-xs text-neutral-500">
+          <span>{props.label}</span>
+          <span class="font-mono">--</span>
+        </div>
+      }
+    >
+      {(hotspot) => (
+        <button
+          type="button"
+          class="grid min-w-0 grid-cols-[1fr_auto] gap-2 rounded-md border border-neutral-800 bg-neutral-950/45 p-2 text-left text-xs hover:border-neutral-700 hover:bg-neutral-900"
+          onClick={() => props.onSelect(hotspot().event.captureSeq)}
+        >
+          <span class="truncate text-neutral-500">{props.label}</span>
+          <span class="font-mono text-neutral-200">{formatLatencyValue(hotspot().valueMs)}</span>
+          <span class="truncate font-mono text-neutral-400">
+            #{hotspot().event.captureSeq} {eventScopeLabel(hotspot().event)}
+          </span>
+          <span class="truncate text-right font-mono text-neutral-600">
+            {formatEventTime(hotspot().event.receivedAt)}
+          </span>
+        </button>
+      )}
+    </Show>
+  );
+}
+
+function StreamDiffPanel(props: {
+  streams: string[];
+  baseStream: string;
+  compareStream: string;
+  summary: StreamDiffSummary | undefined;
+  onBaseChange: (streamId: string) => void;
+  onCompareChange: (streamId: string) => void;
+  onSelectEvent: (captureSeq: number) => void;
+}) {
+  const issueTotal = createMemo(
+    () =>
+      (props.summary?.missing ?? 0) +
+      (props.summary?.extra ?? 0) +
+      (props.summary?.divergent ?? 0),
+  );
+
+  return (
+    <div class="min-h-0 border-b border-neutral-800 lg:border-r lg:border-b-0">
+      <PanelHeader
+        icon={GitCompare}
+        title="Stream Diff"
+        detail={`${formatCount(issueTotal())} differences`}
+      />
+      <Show
+        when={props.streams.length > 1 && props.summary}
+        fallback={
+          <EmptyPanel
+            icon={GitCompare}
+            title="No comparable streams"
+            detail="Capture at least two streams to align events by scope, type, and sequence."
+          />
+        }
+      >
+        {(summary) => (
+          <div class="grid max-h-full gap-3 overflow-auto p-3">
+            <div class="grid grid-cols-2 gap-2">
+              <label class="grid min-w-0 gap-1">
+                <span class="truncate text-xs text-neutral-500">Base</span>
+                <select
+                  class="field h-8 min-h-8 w-full py-1 text-xs"
+                  value={props.baseStream}
+                  onInput={(event) => props.onBaseChange(event.currentTarget.value)}
+                >
+                  <For each={props.streams}>
+                    {(stream) => <option value={stream}>{stream}</option>}
+                  </For>
+                </select>
+              </label>
+              <label class="grid min-w-0 gap-1">
+                <span class="truncate text-xs text-neutral-500">Compare</span>
+                <select
+                  class="field h-8 min-h-8 w-full py-1 text-xs"
+                  value={props.compareStream}
+                  onInput={(event) => props.onCompareChange(event.currentTarget.value)}
+                >
+                  <For each={props.streams}>
+                    {(stream) => <option value={stream}>{stream}</option>}
+                  </For>
+                </select>
+              </label>
+            </div>
+
+            <div class="grid grid-cols-4 gap-2 text-xs">
+              <TopicMetric label="Match" value={formatCount(summary().matched)} />
+              <TopicMetric label="Missing" value={formatCount(summary().missing)} />
+              <TopicMetric label="Extra" value={formatCount(summary().extra)} />
+              <TopicMetric label="Diff" value={formatCount(summary().divergent)} />
+            </div>
+
+            <div class="grid gap-2">
+              <For
+                each={summary().rows.filter((row) => row.status !== "matched").slice(0, 12)}
+                fallback={<div class="text-sm text-neutral-500">Streams are aligned.</div>}
+              >
+                {(row) => {
+                  const event = () => row.baseEvent ?? row.compareEvent;
+                  return (
+                    <button
+                      type="button"
+                      class="grid min-w-0 grid-cols-[82px_1fr] gap-2 rounded-md border border-neutral-800 bg-neutral-950/45 p-2 text-left text-xs hover:border-neutral-700 hover:bg-neutral-900"
+                      onClick={() => {
+                        const target = event();
+                        if (target) {
+                          props.onSelectEvent(target.captureSeq);
+                        }
+                      }}
+                    >
+                      <span class={row.status === "divergent" ? "badge-error" : "badge-muted"}>
+                        {formatDiffStatus(row.status)}
+                      </span>
+                      <span class="truncate font-mono text-neutral-300">{row.key}</span>
+                      <span class="font-mono text-neutral-600">
+                        #{event()?.captureSeq ?? "--"}
+                      </span>
+                      <span class="truncate text-neutral-500">{row.detail}</span>
+                    </button>
+                  );
+                }}
+              </For>
+            </div>
+          </div>
+        )}
+      </Show>
+    </div>
+  );
+}
+
+type ReplayEventState = "current" | "replayed" | "queued" | undefined;
+
+function EventStatusBadge(props: { event: CaptureEvent; replayState?: ReplayEventState }) {
   const code = () => props.event.issues?.[0]?.code;
   const label = () => {
+    if (props.replayState === "current") {
+      return "Replay";
+    }
+    if (props.replayState === "queued") {
+      return "Queued";
+    }
     if (code() === "out_of_order") {
       return "Order";
     }
@@ -1065,7 +1709,16 @@ function EventStatusBadge(props: { event: CaptureEvent }) {
     }
     return code() ? formatIssueCode(code() ?? "") : "OK";
   };
-  return <span class={code() ? "badge-error" : "badge-live"}>{label()}</span>;
+  const className = () => {
+    if (props.replayState === "current") {
+      return "badge-replay";
+    }
+    if (props.replayState === "queued") {
+      return "badge-muted";
+    }
+    return code() ? "badge-error" : "badge-live";
+  };
+  return <span class={className()}>{label()}</span>;
 }
 
 function CapturePanel(props: {
@@ -1221,6 +1874,70 @@ function FileImportButton(props: { onImport: (file: File) => void }) {
   );
 }
 
+function ReplayControls(props: {
+  events: CaptureEvent[];
+  enabled: boolean;
+  playing: boolean;
+  speed: ReplaySpeed;
+  cursorIndex: number;
+  clockMs: number;
+  onStart: () => void;
+  onStop: () => void;
+  onTogglePlaying: () => void;
+  onSeek: (index: number) => void;
+  onSpeedChange: (speed: ReplaySpeed) => void;
+}) {
+  const cursor = () => (props.enabled ? Math.max(0, props.cursorIndex) : 0);
+  const disabled = () => props.events.length === 0;
+  return (
+    <div class="grid min-w-[280px] flex-1 grid-cols-[auto_auto_minmax(96px,1fr)_76px] items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900/55 px-2 py-1">
+      <IconTextButton
+        icon={props.enabled && props.playing ? Pause : Play}
+        label={props.enabled ? (props.playing ? "Pause replay" : "Play replay") : "Replay"}
+        onClick={disabled() ? undefined : props.enabled ? props.onTogglePlaying : props.onStart}
+        primary={props.enabled}
+      />
+      <button
+        type="button"
+        class="inline-flex h-8 min-w-0 items-center justify-center rounded-md border border-neutral-700 bg-neutral-950 px-2 text-xs text-neutral-200 hover:border-neutral-500 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-45"
+        disabled={!props.enabled}
+        onClick={props.onStop}
+      >
+        Stop
+      </button>
+      <label class="grid min-w-0 grid-cols-[1fr_auto] items-center gap-2">
+        <input
+          class="min-w-0 accent-cyan-300"
+          type="range"
+          min="0"
+          max={Math.max(0, props.events.length - 1)}
+          value={cursor()}
+          disabled={!props.enabled || props.events.length < 2}
+          onInput={(event) => props.onSeek(Number(event.currentTarget.value))}
+        />
+        <span class="w-[72px] truncate text-right font-mono text-xs text-neutral-400">
+          {props.enabled
+            ? formatReplayClock(props.clockMs)
+            : formatReplayClock(props.events[0]?.receivedAt)}
+        </span>
+      </label>
+      <select
+        class="field h-8 min-h-8 w-full py-1 text-xs"
+        value={props.speed}
+        disabled={!props.enabled}
+        onInput={(event) => props.onSpeedChange(Number(event.currentTarget.value) as ReplaySpeed)}
+      >
+        <option value={0.25}>0.25x</option>
+        <option value={0.5}>0.5x</option>
+        <option value={1}>1x</option>
+        <option value={2}>2x</option>
+        <option value={4}>4x</option>
+        <option value={8}>8x</option>
+      </select>
+    </div>
+  );
+}
+
 function MiniIconButton(props: {
   icon: Component<{ size?: number; class?: string }>;
   label: string;
@@ -1303,8 +2020,8 @@ function EmptyState(props: { connected: boolean }) {
       title={props.connected ? "Awaiting upstream frames" : "No captured events yet"}
       detail={
         props.connected
-          ? "Captured WebSocket messages will render here in capture order."
-          : "Connect an upstream WebSocket to start capturing events."
+          ? "Captured upstream messages will render here in capture order."
+          : "Connect an upstream WebSocket or SSE stream to start capturing events."
       }
     />
   );
@@ -1343,8 +2060,23 @@ function parseHeaders(value: string): Record<string, string> {
   return headers;
 }
 
-function demoStreamUrl(scenario: DemoScenario): string {
-  return `ws://localhost:8791/stream?scenario=${encodeURIComponent(scenario)}`;
+function demoStreamUrl(scenario: DemoScenario, transport: UpstreamTransport): string {
+  const base = transport === "sse" ? "http://localhost:8791" : "ws://localhost:8791";
+  return `${base}/stream?scenario=${encodeURIComponent(scenario)}`;
+}
+
+function formatTransport(value: CaptureTransport | undefined): string {
+  if (value === "sse") {
+    return "SSE";
+  }
+  return "WS";
+}
+
+function formatDiffStatus(value: string): string {
+  if (value === "divergent") {
+    return "Diff";
+  }
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function previewPayload(event: CaptureEvent): string {
@@ -1355,6 +2087,32 @@ function previewPayload(event: CaptureEvent): string {
     return JSON.stringify(event.envelope.payload);
   }
   return event.raw ?? event.rawBase64 ?? "";
+}
+
+function eventReplayTimeMs(event: CaptureEvent, index: number): number {
+  const parsed = Date.parse(event.receivedAt);
+  if (!Number.isNaN(parsed)) {
+    return parsed;
+  }
+  return index * 100;
+}
+
+function eventReplayState(
+  event: CaptureEvent,
+  replayEnabled: boolean,
+  replayCursorSeq: number | undefined,
+  replayedThroughSeq: number | undefined,
+): ReplayEventState {
+  if (!replayEnabled || replayedThroughSeq === undefined) {
+    return undefined;
+  }
+  if (event.captureSeq === replayCursorSeq) {
+    return "current";
+  }
+  if (event.captureSeq > replayedThroughSeq) {
+    return "queued";
+  }
+  return "replayed";
 }
 
 function formatInspectorTab(event: CaptureEvent, tab: InspectorTab): string {
@@ -1369,10 +2127,15 @@ function formatInspectorTab(event: CaptureEvent, tab: InspectorTab): string {
   if (tab === "raw") {
     return event.raw ?? event.rawBase64 ?? "";
   }
+  if (tab === "correlation") {
+    return stringifyInspectorValue(event.correlation ?? null);
+  }
   return stringifyInspectorValue({
     id: event.id,
     streamId: event.streamId,
     connectionId: event.connectionId,
+    transport: event.transport,
+    transportMeta: event.transportMeta,
     captureSeq: event.captureSeq,
     receivedAt: event.receivedAt,
     direction: event.direction,
@@ -1384,6 +2147,7 @@ function formatInspectorTab(event: CaptureEvent, tab: InspectorTab): string {
     oversized: event.oversized,
     effectiveKey: event.effectiveKey,
     sourceTs: event.sourceTs,
+    correlation: event.correlation,
     statuses: event.statuses,
   });
 }
@@ -1420,6 +2184,17 @@ function formatSessionDate(value: string): string {
   });
 }
 
+function formatReplayClock(value: string | number | undefined): string {
+  if (value === undefined) {
+    return "--:--:--";
+  }
+  const date = typeof value === "number" ? new Date(value) : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "--:--:--";
+  }
+  return date.toLocaleTimeString(undefined, { hour12: false });
+}
+
 function formatFreshness(value: number): string {
   if (!Number.isFinite(value)) {
     return "--";
@@ -1428,6 +2203,21 @@ function formatFreshness(value: number): string {
     return `${Math.max(0, Math.round(value))}ms`;
   }
   return `${Math.round(value / 1_000)}s`;
+}
+
+function formatLatencyValue(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) {
+    return "--";
+  }
+  const sign = value < 0 ? "-" : "";
+  const absolute = Math.abs(value);
+  if (absolute < 1_000) {
+    return `${sign}${Math.round(absolute)}ms`;
+  }
+  if (absolute < 10_000) {
+    return `${sign}${(absolute / 1_000).toFixed(1)}s`;
+  }
+  return `${sign}${Math.round(absolute / 1_000)}s`;
 }
 
 function formatRate(value: number): string {

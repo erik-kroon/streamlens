@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -20,13 +21,15 @@ const (
 var demoScenarios = []string{"normal", "gap", "duplicate", "out_of_order", "stale", "malformed", "oversized", "burst"}
 
 type demoEnvelope struct {
-	Topic   string                 `json:"topic"`
-	Type    string                 `json:"type"`
-	Seq     int64                  `json:"seq"`
-	TS      string                 `json:"ts"`
-	Symbol  string                 `json:"symbol,omitempty"`
-	Key     string                 `json:"key,omitempty"`
-	Payload map[string]interface{} `json:"payload"`
+	Topic       string                 `json:"topic"`
+	Type        string                 `json:"type"`
+	Seq         int64                  `json:"seq"`
+	TS          string                 `json:"ts"`
+	Symbol      string                 `json:"symbol,omitempty"`
+	Key         string                 `json:"key,omitempty"`
+	Traceparent string                 `json:"traceparent,omitempty"`
+	Resource    map[string]interface{} `json:"resource,omitempty"`
+	Payload     map[string]interface{} `json:"payload"`
 }
 
 func runDemoStreamServer(address string, logger *slog.Logger) {
@@ -45,7 +48,7 @@ func runDemoStreamServer(address string, logger *slog.Logger) {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	logger.Info("Wiretap demo stream listening", "address", "ws://"+address+"/stream")
+	logger.Info("Wiretap demo stream listening", "websocket", "ws://"+address+"/stream", "sse", "http://"+address+"/stream")
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("demo stream stopped", "error", err)
 	}
@@ -57,7 +60,7 @@ func handleDemoStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isWebSocketUpgrade(r) {
-		http.Error(w, "expected websocket upgrade", http.StatusBadRequest)
+		handleDemoSSE(w, r)
 		return
 	}
 
@@ -101,6 +104,31 @@ func handleDemoStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func handleDemoSSE(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	scenario := strings.TrimSpace(r.URL.Query().Get("scenario"))
+	if scenario == "" {
+		scenario = "normal"
+	}
+
+	switch scenario {
+	case "burst":
+		streamDemoSSEBurst(r.Context(), w, flusher)
+	default:
+		streamDemoSSEScenario(r.Context(), w, flusher, scenario)
+	}
+}
+
 func streamDemoBurst(ctx context.Context, conn interface{ Write([]byte) (int, error) }) {
 	ticker := time.NewTicker(burstBatchInterval)
 	defer ticker.Stop()
@@ -130,6 +158,36 @@ func streamDemoBurst(ctx context.Context, conn interface{ Write([]byte) (int, er
 	}
 }
 
+func streamDemoSSEBurst(ctx context.Context, writer io.Writer, flusher http.Flusher) {
+	ticker := time.NewTicker(burstBatchInterval)
+	defer ticker.Stop()
+
+	startedAt := time.Now().UTC()
+	seq := int64(1)
+	perBatch := burstEventsPerSecond / int(time.Second/burstBatchInterval)
+	totalEvents := burstEventsPerSecond * int(burstDuration/time.Second)
+
+	for sent := 0; sent < totalEvents; {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			for i := 0; i < perBatch && sent < totalEvents; i++ {
+				payload := demoEventPayload("burst", seq, now.UTC())
+				if err := writeSSEData(writer, "message", fmt.Sprintf("burst-%d", seq), payload); err != nil {
+					return
+				}
+				seq++
+				sent++
+			}
+			flusher.Flush()
+			if time.Since(startedAt) >= burstDuration && sent >= totalEvents {
+				return
+			}
+		}
+	}
+}
+
 func streamDemoScenario(ctx context.Context, conn interface{ Write([]byte) (int, error) }, scenario string) {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -151,6 +209,47 @@ func streamDemoScenario(ctx context.Context, conn interface{ Write([]byte) (int,
 			frameIndex++
 		}
 	}
+}
+
+func streamDemoSSEScenario(ctx context.Context, writer io.Writer, flusher http.Flusher, scenario string) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	frameIndex := int64(1)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			if scenario == "stale" && frameIndex == 6 {
+				time.Sleep(1500 * time.Millisecond)
+			}
+
+			payload := demoScenarioPayload(scenario, frameIndex, now.UTC())
+			if err := writeSSEData(writer, "message", fmt.Sprintf("%s-%d", scenario, frameIndex), payload); err != nil {
+				return
+			}
+			flusher.Flush()
+			frameIndex++
+		}
+	}
+}
+
+func writeSSEData(writer io.Writer, eventType string, id string, payload []byte) error {
+	if eventType != "" {
+		if _, err := fmt.Fprintf(writer, "event: %s\n", eventType); err != nil {
+			return err
+		}
+	}
+	if id != "" {
+		if _, err := fmt.Fprintf(writer, "id: %s\n", id); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(writer, "data: %s\n\n", payload); err != nil {
+		return err
+	}
+	return nil
 }
 
 func demoScenarioPayload(scenario string, frameIndex int64, at time.Time) []byte {
@@ -226,15 +325,20 @@ func demoEventPayload(scenario string, seq int64, at time.Time) []byte {
 		symbol = "BURST"
 	}
 	envelope := demoEnvelope{
-		Topic:  "market." + scenario,
-		Type:   "quote",
-		Seq:    seq,
-		TS:     at.Format(time.RFC3339Nano),
-		Symbol: symbol,
+		Topic:       "market." + scenario,
+		Type:        "quote",
+		Seq:         seq,
+		TS:          at.Format(time.RFC3339Nano),
+		Symbol:      symbol,
+		Traceparent: demoTraceparent(seq),
+		Resource: map[string]interface{}{
+			"service": map[string]interface{}{"name": "wiretap-demo"},
+		},
 		Payload: map[string]interface{}{
 			"bid":      180 + float64(seq%100)/100,
 			"ask":      180.05 + float64(seq%100)/100,
 			"scenario": scenario,
+			"logId":    fmt.Sprintf("demo-log-%d", seq),
 		},
 	}
 
@@ -243,4 +347,8 @@ func demoEventPayload(scenario string, seq int64, at time.Time) []byte {
 		return []byte(fmt.Sprintf(`{"topic":"market.%s","type":"quote","seq":%d,"payload":{}}`, scenario, seq))
 	}
 	return data
+}
+
+func demoTraceparent(seq int64) string {
+	return fmt.Sprintf("00-%032x-%016x-01", seq, seq)
 }

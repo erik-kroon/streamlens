@@ -181,6 +181,119 @@ func TestNormalizeCaptureAppliesDeclarativeSchemaPlugin(t *testing.T) {
 	}
 }
 
+func TestNormalizeCaptureExtractsOpenTelemetryCorrelation(t *testing.T) {
+	event := normalizeCapture(upstreamFrame{
+		opcode:    0x1,
+		payload:   []byte(`{"topic":"orders","type":"created","seq":1,"traceparent":"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01","resource":{"service":{"name":"checkout"}},"payload":{"logId":"log-42"}}`),
+		sizeBytes: 185,
+	})
+
+	if event.Correlation == nil {
+		t.Fatal("expected correlation fields to be extracted")
+	}
+	if event.Correlation.TraceID != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Fatalf("expected trace id from traceparent, got %#v", event.Correlation)
+	}
+	if event.Correlation.SpanID != "00f067aa0ba902b7" {
+		t.Fatalf("expected span id from traceparent, got %#v", event.Correlation)
+	}
+	if event.Correlation.LogID != "log-42" || event.Correlation.ServiceName != "checkout" {
+		t.Fatalf("expected log and service correlation, got %#v", event.Correlation)
+	}
+}
+
+func TestNormalizeCaptureUsesConfigurableOpenTelemetryPaths(t *testing.T) {
+	event := normalizeCaptureWithRules(upstreamFrame{
+		opcode:    0x1,
+		payload:   []byte(`{"topic":"orders","type":"created","seq":1,"meta":{"trace":"4bf92f3577b34da6a3ce929d0e0e4736","span":"00f067aa0ba902b7","parent":"3bf067aa0ba902b7"}}`),
+		sizeBytes: 150,
+	}, extractionRules{
+		Otel: otelRules{
+			TraceIDPaths:      []string{"meta.trace"},
+			SpanIDPaths:       []string{"meta.span"},
+			ParentSpanIDPaths: []string{"meta.parent"},
+		},
+	})
+
+	if event.Correlation == nil {
+		t.Fatal("expected configurable correlation fields to be extracted")
+	}
+	if event.Correlation.TraceID != "4bf92f3577b34da6a3ce929d0e0e4736" ||
+		event.Correlation.SpanID != "00f067aa0ba902b7" ||
+		event.Correlation.ParentSpanID != "3bf067aa0ba902b7" {
+		t.Fatalf("expected custom otel paths to populate correlation, got %#v", event.Correlation)
+	}
+}
+
+func TestConnectRequestSupportsSSETransport(t *testing.T) {
+	request := connectRequest{
+		StreamID:  "quotes",
+		Transport: "sse",
+		URL:       "http://example.test/events",
+		Headers:   map[string]string{" x-client ": " wiretap "},
+	}
+
+	if err := request.validate(); err != nil {
+		t.Fatalf("expected sse request to validate: %v", err)
+	}
+	if request.Transport != transportSSE {
+		t.Fatalf("expected normalized sse transport, got %q", request.Transport)
+	}
+	if request.Headers["x-client"] != "wiretap" {
+		t.Fatalf("expected headers to be trimmed, got %#v", request.Headers)
+	}
+}
+
+func TestConnectRequestInfersTransportFromScheme(t *testing.T) {
+	cases := map[string]string{
+		"ws://example.test/stream":    transportWebSocket,
+		"wss://example.test/stream":   transportWebSocket,
+		"http://example.test/events":  transportSSE,
+		"https://example.test/events": transportSSE,
+	}
+
+	for targetURL, expected := range cases {
+		t.Run(targetURL, func(t *testing.T) {
+			request := connectRequest{URL: targetURL}
+			if err := request.validate(); err != nil {
+				t.Fatalf("expected request to validate: %v", err)
+			}
+			if request.Transport != expected {
+				t.Fatalf("expected %q transport, got %q", expected, request.Transport)
+			}
+		})
+	}
+}
+
+func TestSSEScannerAndNormalizationPreserveTransportMetadata(t *testing.T) {
+	scanner := newSSEScanner(strings.NewReader("event: quote\nid: q-1\ndata: {\"topic\":\"market.sse\",\"type\":\"quote\",\"seq\":1,\"symbol\":\"SSE\",\"payload\":{\"bid\":10}}\n\n"))
+	message, err := scanner.next()
+	if err != nil {
+		t.Fatalf("expected first sse event: %v", err)
+	}
+
+	event := normalizeCapture(upstreamFrame{
+		opcode:    0x1,
+		payload:   message.data,
+		sizeBytes: message.sizeBytes,
+		transport: transportSSE,
+		transportMeta: map[string]string{
+			"event": message.eventType,
+			"id":    message.id,
+		},
+	})
+
+	if event.Transport != transportSSE {
+		t.Fatalf("expected sse transport on event, got %q", event.Transport)
+	}
+	if event.TransportMeta["event"] != "quote" || event.TransportMeta["id"] != "q-1" {
+		t.Fatalf("expected sse metadata to be preserved, got %#v", event.TransportMeta)
+	}
+	if event.Topic != "market.sse" || event.EffectiveKey != "SSE" {
+		t.Fatalf("expected normalized sse payload, got %#v", event)
+	}
+}
+
 func TestRecordEventAssignsRetainedIdentityAndRingBuffer(t *testing.T) {
 	agent := &agent{connectionID: "conn-test", startedAt: timeNowForTest()}
 	for i := 0; i < maxBufferedEvents+2; i++ {
@@ -321,6 +434,9 @@ func TestExportSnapshotWritesStableRetainedCaptureFormat(t *testing.T) {
 	if events[0].Parsed == nil || events[0].Parsed.Topic != "market.AAPL" || events[0].Parsed.Seq == nil || *events[0].Parsed.Seq != 7 {
 		t.Fatalf("expected parsed envelope in export, got %#v", events[0].Parsed)
 	}
+	if events[0].Correlation != nil {
+		t.Fatalf("expected no correlation for uncorrelated event, got %#v", events[0].Correlation)
+	}
 	if events[1].Parsed != nil {
 		t.Fatalf("expected oversized preview to omit parsed envelope, got %#v", events[1].Parsed)
 	}
@@ -363,6 +479,64 @@ func TestHandleExportJSONLWritesOneJSONEventPerLine(t *testing.T) {
 	}
 	if exported.CaptureSeq != 1 || exported.Raw == "" || exported.Parsed == nil {
 		t.Fatalf("expected retained event export, got %#v", exported)
+	}
+}
+
+func TestHandleExportTapeWritesTapeCompatibleSession(t *testing.T) {
+	agent := &agent{connectionID: "conn-test", startedAt: timeNowForTest()}
+	event := normalizedEnvelopeForTest("market.AAPL", "AAPL", 7)
+	event.ReceivedAt = "2026-04-25T11:00:00Z"
+	agent.recordEvent(event)
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/export/tape", nil)
+	agent.handleExportTape(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", response.Code)
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "application/x-ndjson" {
+		t.Fatalf("expected tape content type, got %q", contentType)
+	}
+	if disposition := response.Header().Get("Content-Disposition"); !strings.Contains(disposition, ".tape") {
+		t.Fatalf("expected tape attachment disposition, got %q", disposition)
+	}
+
+	lines := strings.Split(strings.TrimSpace(response.Body.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected metadata and one event line, got %d: %q", len(lines), response.Body.String())
+	}
+
+	var header tapeExportRecord
+	if err := json.Unmarshal([]byte(lines[0]), &header); err != nil {
+		t.Fatalf("expected valid tape metadata record: %v", err)
+	}
+	if header.Meta == nil || header.Meta.SchemaVersion != tapeSessionSchemaVersion {
+		t.Fatalf("expected tape metadata header, got %#v", header)
+	}
+	if got := strings.Join(header.Meta.SymbolUniverse, ","); got != "AAPL" {
+		t.Fatalf("expected tape symbol universe AAPL, got %q", got)
+	}
+	if got := strings.Join(header.Meta.EventFamilies, ","); got != "tick" {
+		t.Fatalf("expected tape event family tick, got %q", got)
+	}
+
+	var record tapeExportRecord
+	if err := json.Unmarshal([]byte(lines[1]), &record); err != nil {
+		t.Fatalf("expected valid tape event record: %v", err)
+	}
+	if record.Type != "tick" || record.Index == nil || *record.Index != 0 {
+		t.Fatalf("expected tape tick record at index 0, got %#v", record)
+	}
+	if record.Payload["time"] != "2026-04-25T11:00:00Z" || record.Payload["symbol"] != "AAPL" {
+		t.Fatalf("expected tape payload time and symbol, got %#v", record.Payload)
+	}
+	if record.Payload["seq"] != float64(7) {
+		t.Fatalf("expected tape payload seq 7, got %#v", record.Payload["seq"])
+	}
+	wiretap, ok := record.Payload["wiretap"].(map[string]interface{})
+	if !ok || wiretap["captureSeq"] != float64(1) || wiretap["raw"] == "" {
+		t.Fatalf("expected wiretap metadata to be preserved, got %#v", record.Payload["wiretap"])
 	}
 }
 
@@ -485,6 +659,51 @@ func TestHandleImportJSONLReconstructsInspectableSession(t *testing.T) {
 	}
 }
 
+func TestHandleImportJSONLPreservesExportedStreamScopes(t *testing.T) {
+	source := &agent{startedAt: timeNowForTest()}
+	alpha := normalizedEnvelopeForTest("market.quote", "AAPL", 1)
+	alpha.ReceivedAt = "2026-04-25T11:00:00Z"
+	alpha.Transport = transportSSE
+	alpha.TransportMeta = map[string]string{"event": "quote", "id": "alpha-1"}
+	source.recordEventForStream("alpha", alpha)
+	beta := normalizedEnvelopeForTest("market.quote", "AAPL", 1)
+	beta.ReceivedAt = "2026-04-25T11:00:01Z"
+	source.recordEventForStream("beta", beta)
+
+	var body strings.Builder
+	encoder := json.NewEncoder(&body)
+	for _, event := range source.exportSnapshot() {
+		if err := encoder.Encode(event); err != nil {
+			t.Fatalf("failed to encode exported event: %v", err)
+		}
+	}
+
+	agent := newStoredAgentForTest(t, t.TempDir())
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/import/jsonl", strings.NewReader(body.String()))
+	request.Header.Set("Content-Type", "application/x-ndjson")
+	agent.handleImportJSONL(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", response.Code, response.Body.String())
+	}
+	events := agent.eventSnapshot()
+	if len(events) != 2 || events[0].StreamID != "alpha" || events[1].StreamID != "beta" {
+		t.Fatalf("expected imported stream ids to be retained, got %#v", events)
+	}
+	if events[0].Transport != transportSSE || events[0].TransportMeta["id"] != "alpha-1" {
+		t.Fatalf("expected imported transport metadata to be retained, got %#v", events[0])
+	}
+
+	streams := agent.stats().Streams
+	if len(streams) != 2 || streams[0].ID != "alpha" || streams[1].ID != "beta" {
+		t.Fatalf("expected imported session to rebuild per-stream runtime, got %#v", streams)
+	}
+	if countIssueCode(events[1].Issues, "duplicate") != 0 || countIssueCode(events[1].Issues, "out_of_order") != 0 {
+		t.Fatalf("expected imported streams to keep independent sequence scopes, got %#v", events[1].Issues)
+	}
+}
+
 func TestSessionLibraryListsOpensDeletesAndExportsSavedSessions(t *testing.T) {
 	agent := newStoredAgentForTest(t, t.TempDir())
 	agent.connectionID = "conn-test"
@@ -572,6 +791,23 @@ func TestSessionLibraryListsOpensDeletesAndExportsSavedSessions(t *testing.T) {
 	streams = agent.stats().Streams
 	if len(streams) != 1 || streams[0].ID != "beta" || streams[0].Events != 1 {
 		t.Fatalf("expected delete to rebuild beta stream runtime, got %#v", streams)
+	}
+}
+
+func TestWithCORSAllowsSessionDeletePreflight(t *testing.T) {
+	agent := &agent{startedAt: timeNowForTest()}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodOptions, "/sessions/cap-1", nil)
+
+	agent.withCORS(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("preflight should not reach wrapped handler")
+	})(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("expected preflight status 204, got %d", response.Code)
+	}
+	if methods := response.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(methods, http.MethodDelete) {
+		t.Fatalf("expected DELETE in CORS methods, got %q", methods)
 	}
 }
 

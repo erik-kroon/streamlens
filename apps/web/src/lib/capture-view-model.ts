@@ -29,6 +29,59 @@ export type IssueSummary = {
   issue: CaptureIssue;
 };
 
+export type LatencyMetricSummary = {
+  sampleCount: number;
+  minMs: number | undefined;
+  p50Ms: number | undefined;
+  p95Ms: number | undefined;
+  maxMs: number | undefined;
+  averageMs: number | undefined;
+};
+
+export type LatencyHistogramBucket = {
+  label: string;
+  minMs: number;
+  maxMs: number | undefined;
+  count: number;
+};
+
+export type LatencyHotspot = {
+  event: CaptureEvent;
+  valueMs: number;
+};
+
+export type LatencyAnalytics = {
+  eventCount: number;
+  sourceLag: LatencyMetricSummary;
+  receiveInterval: LatencyMetricSummary;
+  sourceLagBuckets: LatencyHistogramBucket[];
+  receiveIntervalBuckets: LatencyHistogramBucket[];
+  worstSourceLag: LatencyHotspot | undefined;
+  longestReceiveInterval: LatencyHotspot | undefined;
+};
+
+export type StreamDiffStatus = "matched" | "missing" | "extra" | "divergent";
+
+export type StreamDiffRow = {
+  key: string;
+  status: StreamDiffStatus;
+  baseEvent: CaptureEvent | undefined;
+  compareEvent: CaptureEvent | undefined;
+  detail: string;
+};
+
+export type StreamDiffSummary = {
+  baseStreamId: string;
+  compareStreamId: string;
+  matched: number;
+  missing: number;
+  extra: number;
+  divergent: number;
+  rows: StreamDiffRow[];
+};
+
+const latencyBucketBounds = [0, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000];
+
 export function maxCaptureSeq(events: CaptureEvent[]): number {
   let max = 0;
   for (const event of events) {
@@ -176,6 +229,119 @@ export function recentIssueSummaries(events: CaptureEvent[]): IssueSummary[] {
     .reverse();
 }
 
+export function summarizeLatency(events: CaptureEvent[]): LatencyAnalytics {
+  const orderedEvents = [...events].sort((a, b) => a.captureSeq - b.captureSeq);
+  const sourceLagSamples: LatencyHotspot[] = [];
+  const receiveIntervalSamples: LatencyHotspot[] = [];
+
+  let previousReceivedAt: number | undefined;
+  for (const event of orderedEvents) {
+    const receivedAt = parseTimestampMs(event.receivedAt);
+    const sourceTs = parseTimestampMs(event.sourceTs);
+    if (receivedAt !== undefined && sourceTs !== undefined) {
+      sourceLagSamples.push({ event, valueMs: receivedAt - sourceTs });
+    }
+    if (receivedAt !== undefined && previousReceivedAt !== undefined) {
+      receiveIntervalSamples.push({
+        event,
+        valueMs: Math.max(0, receivedAt - previousReceivedAt),
+      });
+    }
+    if (receivedAt !== undefined) {
+      previousReceivedAt = receivedAt;
+    }
+  }
+
+  return {
+    eventCount: orderedEvents.length,
+    sourceLag: summarizeMetric(sourceLagSamples.map((sample) => sample.valueMs)),
+    receiveInterval: summarizeMetric(receiveIntervalSamples.map((sample) => sample.valueMs)),
+    sourceLagBuckets: buildLatencyHistogram(sourceLagSamples.map((sample) => sample.valueMs)),
+    receiveIntervalBuckets: buildLatencyHistogram(
+      receiveIntervalSamples.map((sample) => sample.valueMs),
+    ),
+    worstSourceLag: maxHotspot(sourceLagSamples),
+    longestReceiveInterval: maxHotspot(receiveIntervalSamples),
+  };
+}
+
+export function summarizeStreamDiff(
+  events: CaptureEvent[],
+  baseStreamId: string,
+  compareStreamId: string,
+): StreamDiffSummary {
+  const baseEvents = events
+    .filter((event) => streamIdForEvent(event) === baseStreamId)
+    .sort((a, b) => a.captureSeq - b.captureSeq);
+  const compareEvents = events
+    .filter((event) => streamIdForEvent(event) === compareStreamId)
+    .sort((a, b) => a.captureSeq - b.captureSeq);
+  const compareByKey = groupEventsByDiffKey(compareEvents);
+  const usedCompareKeys = new Set<string>();
+  const rows: StreamDiffRow[] = [];
+
+  for (const baseEvent of baseEvents) {
+    const key = diffEventKey(baseEvent);
+    const compareEvent = shiftEventForKey(compareByKey, key);
+    if (!compareEvent) {
+      rows.push({
+        key,
+        status: "missing",
+        baseEvent,
+        compareEvent: undefined,
+        detail: "Missing from compare stream",
+      });
+      continue;
+    }
+
+    usedCompareKeys.add(key);
+    const baseFingerprint = diffPayloadFingerprint(baseEvent);
+    const compareFingerprint = diffPayloadFingerprint(compareEvent);
+    const divergent = baseFingerprint !== compareFingerprint;
+    rows.push({
+      key,
+      status: divergent ? "divergent" : "matched",
+      baseEvent,
+      compareEvent,
+      detail: divergent ? "Payload differs" : "Aligned",
+    });
+  }
+
+  for (const compareEvent of compareEvents) {
+    const key = diffEventKey(compareEvent);
+    if (usedCompareKeys.has(key)) {
+      continue;
+    }
+    const remaining = compareByKey.get(key);
+    if (!remaining?.includes(compareEvent)) {
+      continue;
+    }
+    rows.push({
+      key,
+      status: "extra",
+      baseEvent: undefined,
+      compareEvent,
+      detail: "Extra in compare stream",
+    });
+  }
+
+  return {
+    baseStreamId,
+    compareStreamId,
+    matched: rows.filter((row) => row.status === "matched").length,
+    missing: rows.filter((row) => row.status === "missing").length,
+    extra: rows.filter((row) => row.status === "extra").length,
+    divergent: rows.filter((row) => row.status === "divergent").length,
+    rows: rows
+      .sort((a, b) => {
+        const aSeq = a.baseEvent?.captureSeq ?? a.compareEvent?.captureSeq ?? 0;
+        const bSeq = b.baseEvent?.captureSeq ?? b.compareEvent?.captureSeq ?? 0;
+        return aSeq - bSeq;
+      })
+      .slice(0, 40),
+  };
+}
+
 export function formatIssueBreakdown(topic: TopicSummary): string {
   const parts = [
     topic.staleCount > 0 ? `${formatCount(topic.staleCount)} stale` : "",
@@ -218,6 +384,154 @@ function topicState(freshnessMs: number): TopicHealthState {
 
 function countEventIssueCode(event: CaptureEvent, code: string): number {
   return event.issues?.filter((issue) => issue.code === code).length ?? 0;
+}
+
+function streamIdForEvent(event: CaptureEvent): string {
+  return event.streamId ?? "default";
+}
+
+function groupEventsByDiffKey(events: CaptureEvent[]): Map<string, CaptureEvent[]> {
+  const grouped = new Map<string, CaptureEvent[]>();
+  for (const event of events) {
+    const key = diffEventKey(event);
+    const bucket = grouped.get(key) ?? [];
+    bucket.push(event);
+    grouped.set(key, bucket);
+  }
+  return grouped;
+}
+
+function shiftEventForKey(
+  grouped: Map<string, CaptureEvent[]>,
+  key: string,
+): CaptureEvent | undefined {
+  const bucket = grouped.get(key);
+  if (!bucket || bucket.length === 0) {
+    return undefined;
+  }
+  return bucket.shift();
+}
+
+function diffEventKey(event: CaptureEvent): string {
+  const scope = eventScopeLabel(event);
+  const type = event.displayType ?? event.eventType ?? event.opcode;
+  if (event.seq !== undefined) {
+    return `${scope} / ${type} / seq:${event.seq}`;
+  }
+  return `${scope} / ${type} / capture:${event.captureSeq}`;
+}
+
+function diffPayloadFingerprint(event: CaptureEvent): string {
+  if (event.envelope?.payload !== undefined) {
+    return stableStringify(event.envelope.payload);
+  }
+  return event.raw ?? event.rawBase64 ?? "";
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "undefined";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  return `{${entries
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+    .join(",")}}`;
+}
+
+function parseTimestampMs(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value < 10_000_000_000 ? value * 1_000 : value;
+  }
+  if (typeof value !== "string" || value.trim() === "") {
+    return undefined;
+  }
+
+  const parsedDate = Date.parse(value);
+  if (!Number.isNaN(parsedDate)) {
+    return parsedDate;
+  }
+
+  const parsedNumber = Number(value);
+  if (Number.isFinite(parsedNumber)) {
+    return parsedNumber < 10_000_000_000 ? parsedNumber * 1_000 : parsedNumber;
+  }
+  return undefined;
+}
+
+function summarizeMetric(values: number[]): LatencyMetricSummary {
+  if (values.length === 0) {
+    return {
+      sampleCount: 0,
+      minMs: undefined,
+      p50Ms: undefined,
+      p95Ms: undefined,
+      maxMs: undefined,
+      averageMs: undefined,
+    };
+  }
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const total = sorted.reduce((sum, value) => sum + value, 0);
+  return {
+    sampleCount: sorted.length,
+    minMs: sorted[0],
+    p50Ms: percentile(sorted, 0.5),
+    p95Ms: percentile(sorted, 0.95),
+    maxMs: sorted[sorted.length - 1],
+    averageMs: total / sorted.length,
+  };
+}
+
+function percentile(sortedValues: number[], percentileValue: number): number {
+  const index = Math.min(
+    sortedValues.length - 1,
+    Math.max(0, Math.ceil(sortedValues.length * percentileValue) - 1),
+  );
+  return sortedValues[index];
+}
+
+function buildLatencyHistogram(values: number[]): LatencyHistogramBucket[] {
+  const buckets = latencyBucketBounds.map((minMs, index) => ({
+    label:
+      index === latencyBucketBounds.length - 1
+        ? `${formatDurationLabel(minMs)}+`
+        : `${formatDurationLabel(minMs)}-${formatDurationLabel(latencyBucketBounds[index + 1])}`,
+    minMs,
+    maxMs: latencyBucketBounds[index + 1],
+    count: 0,
+  }));
+
+  for (const value of values) {
+    const bucket = buckets.find(
+      (candidate) => candidate.maxMs === undefined || value < candidate.maxMs,
+    );
+    if (bucket) {
+      bucket.count += 1;
+    }
+  }
+
+  return buckets;
+}
+
+function maxHotspot(samples: LatencyHotspot[]): LatencyHotspot | undefined {
+  return samples.reduce<LatencyHotspot | undefined>((max, sample) => {
+    if (!max || sample.valueMs > max.valueMs) {
+      return sample;
+    }
+    return max;
+  }, undefined);
+}
+
+function formatDurationLabel(value: number): string {
+  if (value >= 1_000) {
+    return `${value / 1_000}s`;
+  }
+  return `${value}ms`;
 }
 
 function formatCount(value: number): string {
