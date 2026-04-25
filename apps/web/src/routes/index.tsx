@@ -153,12 +153,16 @@ const defaultExtractionRules: ExtractionRules = {
   sandboxBoundary: "declarative-json-rules-only",
 };
 
+const RECENT_TARGETS_KEY = "streamlens.recentTargets";
+const MAX_RECENT_TARGETS = 8;
+
 function App() {
   const agent = createAgentClient();
   const agentView = createAgentDerivedState(agent);
   const [demoScenario, setDemoScenario] = createSignal<DemoScenario>("normal");
   const [transport, setTransport] = createSignal<UpstreamTransport>("websocket");
   const [targetUrl, setTargetUrl] = createSignal(demoStreamUrl("normal", "websocket"));
+  const [recentTargets, setRecentTargets] = createSignal(readRecentTargets());
   const [streamId, setStreamId] = createSignal("default");
   const [streamFilter, setStreamFilter] = createSignal("all");
   const [diffBaseSource, setDiffBaseSource] = createSignal("");
@@ -290,7 +294,6 @@ function App() {
       : sourceEvents.filter((event) => (event.streamId ?? "default") === selectedStream);
   });
   const latencyAnalytics = createMemo(() => summarizeLatency(analyticsEvents()));
-  const timelineSummary = createMemo(() => summarizeTimeline(analyticsEvents(), topics(), now()));
   const bufferedSincePause = createMemo(() =>
     liveFollowPaused() ? events().filter((event) => event.captureSeq > pausedAfterSeq()).length : 0,
   );
@@ -313,6 +316,7 @@ function App() {
     }
     return summarizeTopics(filteredEvents(), now());
   });
+  const timelineSummary = createMemo(() => summarizeTimeline(analyticsEvents(), topics(), now()));
   const streams = createMemo(() => agent.stats()?.streams ?? agent.status()?.streams ?? []);
   const streamIds = createMemo(() => {
     const ids = new Set<string>();
@@ -427,11 +431,12 @@ function App() {
   };
 
   const connect = () =>
-    runControl(() =>
-      agent.connectUpstream({
+    runControl(async () => {
+      const url = targetUrl().trim();
+      await agent.connectUpstream({
         streamId: streamId(),
         transport: transport(),
-        url: targetUrl(),
+        url,
         headers: parseHeaders(headersText()),
         bearerToken: bearerToken(),
         apiKeyHeader: apiKeyHeader(),
@@ -450,8 +455,9 @@ function App() {
           delayMs: faultDelayMs(),
           mutateEvery: faultMutateEvery(),
         },
-      }),
-    );
+      });
+      rememberRecentTarget(url, setRecentTargets);
+    });
 
   const selectDemoScenario = (scenario: DemoScenario) => {
     setDemoScenario(scenario);
@@ -642,7 +648,7 @@ function App() {
     });
 
   return (
-    <main class="relative h-full min-h-0 overflow-hidden bg-neutral-950 pb-9 text-neutral-100">
+    <main class="relative h-full min-h-0 overflow-auto bg-neutral-950 pb-9 text-neutral-100 lg:overflow-hidden">
       <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]">
         <section class="border-b border-neutral-800 bg-neutral-950/95 px-4 py-3">
           <div class="flex flex-wrap items-center justify-between gap-3">
@@ -674,7 +680,7 @@ function App() {
           </div>
         </section>
 
-        <section class="grid min-h-0 overflow-hidden grid-cols-1 grid-rows-[auto_minmax(340px,1fr)_minmax(300px,40vh)_auto] lg:grid-cols-[340px_minmax(0,1fr)_360px] lg:grid-rows-[minmax(0,1fr)_260px]">
+        <section class="grid min-h-0 grid-cols-1 grid-rows-[minmax(280px,42vh)_minmax(360px,1fr)_minmax(320px,45vh)_auto] overflow-visible lg:grid-cols-[340px_minmax(0,1fr)_360px] lg:grid-rows-[minmax(0,1fr)_260px] lg:overflow-hidden">
           <AgentPanel
             phase={agent.phase()}
             controlError={controlError()}
@@ -693,6 +699,7 @@ function App() {
             setTransport={selectTransport}
             targetUrl={targetUrl()}
             setTargetUrl={setTargetUrl}
+            recentTargets={recentTargets()}
             demoScenario={demoScenario()}
             setDemoScenario={selectDemoScenario}
             headersText={headersText()}
@@ -762,6 +769,7 @@ function App() {
                 <Search size={15} />
                 <input
                   class="min-w-0 flex-1 bg-transparent font-mono text-sm text-neutral-100 outline-none placeholder:text-neutral-600"
+                  aria-label="Filter captured events"
                   placeholder="Filter seq, topic, key, raw..."
                   value={filter()}
                   onInput={(event) => setFilter(event.currentTarget.value)}
@@ -823,7 +831,7 @@ function App() {
             <Inspector event={selectedEvent()} />
           </aside>
 
-          <section class="grid min-h-0 min-w-0 grid-cols-1 border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:col-end-4 lg:row-start-2 lg:grid-cols-[280px_340px_360px_minmax(0,1fr)] lg:border-l lg:border-t lg:border-b-0">
+          <section class="grid min-h-0 min-w-0 grid-cols-1 border-b border-neutral-800 bg-neutral-950 lg:col-start-2 lg:col-end-4 lg:row-start-2 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1fr)_minmax(0,1.05fr)_minmax(0,1.35fr)] lg:border-l lg:border-t lg:border-b-0">
             <TopicPanel topics={topics()} activeFilter={filter()} onFilterTopic={setFilter} />
             <LatencyPanel analytics={latencyAnalytics()} onSelectEvent={selectEvent} />
             <StreamDiffPanel
@@ -875,6 +883,7 @@ type AgentPanelProps = {
   setTransport: (value: UpstreamTransport) => void;
   targetUrl: string;
   setTargetUrl: (value: string) => void;
+  recentTargets: string[];
   demoScenario: DemoScenario;
   setDemoScenario: (value: DemoScenario) => void;
   headersText: string;
@@ -1008,7 +1017,16 @@ function AgentPanel(props: AgentPanelProps) {
               </select>
             </label>
           </div>
-          <Field label="Target URI" value={props.targetUrl} onInput={props.setTargetUrl} mono />
+          <Field
+            label="Target URI"
+            value={props.targetUrl}
+            onInput={props.setTargetUrl}
+            listId="recent-targets"
+            mono
+          />
+          <datalist id="recent-targets">
+            <For each={props.recentTargets}>{(target) => <option value={target} />}</For>
+          </datalist>
           <div class="grid grid-cols-2 gap-2">
             <Field
               label="Bearer token"
@@ -1151,6 +1169,7 @@ function SessionLibrary(props: {
           class="inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-neutral-700 bg-neutral-900 text-neutral-300 hover:border-neutral-500 hover:bg-neutral-800"
           onClick={props.onRefresh}
           title="Refresh sessions"
+          aria-label="Refresh sessions"
         >
           <RefreshCw size={13} />
         </button>
@@ -1343,6 +1362,7 @@ function ExtractionRuleEditor(props: {
       </div>
       <textarea
         class="field min-h-[180px] w-full min-w-0 resize-y font-mono text-xs leading-5"
+        aria-label="Extraction rules JSON"
         spellcheck={false}
         value={props.value}
         onInput={(event) => props.onInput(event.currentTarget.value)}
@@ -1428,6 +1448,8 @@ function VirtualEventTable(props: {
         <div
           ref={setViewport}
           class="event-table-scroll min-h-0 overflow-auto"
+          role="region"
+          aria-label="Captured events"
           onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
         >
           <div class="relative min-w-[1080px]" style={{ height: `${totalHeight()}px` }}>
@@ -1446,6 +1468,8 @@ function VirtualEventTable(props: {
                         ? "future-row"
                         : ""
                     }`}
+                    aria-current={props.selectedSeq === event.captureSeq ? "true" : undefined}
+                    aria-label={eventRowLabel(event)}
                     style={{ transform: `translateY(${eventIndex() * rowHeight}px)` }}
                     onClick={() => props.onSelect(event.captureSeq)}
                   >
@@ -1544,12 +1568,20 @@ function Inspector(props: { event: CaptureEvent | undefined }) {
               </dd>
             </dl>
           </div>
-          <div class="flex min-w-0 gap-1 border-b border-neutral-800 bg-neutral-900/50 p-1">
+          <div
+            class="flex min-w-0 gap-1 border-b border-neutral-800 bg-neutral-900/50 p-1"
+            role="tablist"
+            aria-label="Payload inspector tabs"
+          >
             <For each={tabs}>
               {(item) => (
                 <button
                   type="button"
                   class={`inspector-tab ${tab() === item.id ? "selected" : ""}`}
+                  role="tab"
+                  aria-selected={tab() === item.id ? "true" : "false"}
+                  aria-controls={`inspector-panel-${item.id}`}
+                  id={`inspector-tab-${item.id}`}
                   onClick={() => setTab(item.id)}
                 >
                   {item.label}
@@ -1557,7 +1589,12 @@ function Inspector(props: { event: CaptureEvent | undefined }) {
               )}
             </For>
           </div>
-          <div class="min-h-0 overflow-auto p-4">
+          <div
+            class="min-h-0 overflow-auto p-4"
+            role="tabpanel"
+            id={`inspector-panel-${tab()}`}
+            aria-labelledby={`inspector-tab-${tab()}`}
+          >
             <Show when={tab() === "issues"}>
               <Show
                 when={(event().issues?.length ?? 0) > 0}
@@ -1678,6 +1715,7 @@ function TopicPanel(props: {
                     ? "border-cyan-300/45 bg-cyan-300/10"
                     : "border-neutral-800 bg-neutral-900/60 hover:border-neutral-700 hover:bg-neutral-900"
                 }`}
+                aria-pressed={props.activeFilter === topic.name ? "true" : "false"}
                 onClick={() =>
                   props.onFilterTopic(props.activeFilter === topic.name ? "" : topic.name)
                 }
@@ -2134,6 +2172,9 @@ function TimelinePanel(props: {
                             ? "bg-sky-300/55 hover:bg-sky-300/70"
                             : "bg-cyan-300/40 hover:bg-cyan-300/60"
                       } disabled:bg-neutral-800/70`}
+                      aria-label={`${formatCount(bucket.eventCount)} events, ${formatCount(
+                        bucket.issueCount,
+                      )} issues, ${formatLatencyValue(bucket.maxSourceLagMs)} max lag`}
                       style={{
                         height: `${timelineBucketHeight(bucket.eventCount, props.summary)}px`,
                         opacity: bucket.eventCount === 0 ? 0.35 : 1,
@@ -2167,9 +2208,10 @@ function TimelinePanel(props: {
                 {(marker) => (
                   <button
                     type="button"
-                    class={`absolute top-0 h-[70px] w-1 rounded-full ${
+                    class={`timeline-marker absolute top-0 h-[70px] w-2 rounded-full ${
                       marker.kind === "reconnect" ? "bg-sky-300" : "bg-amber-300"
                     }`}
+                    aria-label={`${marker.label}: ${marker.detail}`}
                     style={{ left: `${timelinePositionPercent(marker.atMs, props.summary)}%` }}
                     title={`${marker.label}: ${marker.detail}`}
                     onClick={() => props.onSelectEvent(marker.event.captureSeq)}
@@ -2270,6 +2312,7 @@ function Field(props: {
   onInput: (value: string) => void;
   placeholder?: string;
   type?: string;
+  listId?: string;
   mono?: boolean;
 }) {
   return (
@@ -2278,6 +2321,7 @@ function Field(props: {
       <input
         class={`field w-full min-w-0 ${props.mono ? "font-mono" : ""}`}
         type={props.type ?? "text"}
+        list={props.listId}
         placeholder={props.placeholder}
         value={props.value}
         onInput={(event) => props.onInput(event.currentTarget.value)}
@@ -2306,7 +2350,9 @@ function IconTextButton(props: {
   label: string;
   onClick?: () => void;
   primary?: boolean;
+  disabled?: boolean;
 }) {
+  const disabled = () => props.disabled ?? !props.onClick;
   return (
     <button
       type="button"
@@ -2314,7 +2360,8 @@ function IconTextButton(props: {
         props.primary
           ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100 hover:bg-cyan-300/20"
           : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:border-neutral-500 hover:bg-neutral-800"
-      }`}
+      } disabled:opacity-45 disabled:active:scale-100`}
+      disabled={disabled()}
       onClick={() => props.onClick?.()}
     >
       <Dynamic component={props.icon} class="shrink-0" size={15} />
@@ -2364,7 +2411,8 @@ function ReplayControls(props: {
       <IconTextButton
         icon={props.enabled && props.playing ? Pause : Play}
         label={props.enabled ? (props.playing ? "Pause replay" : "Play replay") : "Replay"}
-        onClick={disabled() ? undefined : props.enabled ? props.onTogglePlaying : props.onStart}
+        onClick={props.enabled ? props.onTogglePlaying : props.onStart}
+        disabled={disabled()}
         primary={props.enabled}
       />
       <button
@@ -2424,6 +2472,7 @@ function MiniIconButton(props: {
       }`}
       onClick={props.onClick}
       title={props.label}
+      aria-label={props.label}
     >
       <Dynamic component={props.icon} class="shrink-0" size={13} />
       <span class="truncate">{props.label}</span>
@@ -2522,7 +2571,9 @@ function parseHeaders(value: string): Record<string, string> {
 }
 
 function demoStreamUrl(scenario: DemoScenario, transport: UpstreamTransport): string {
-  const base = transport === "sse" ? "http://localhost:8791" : "ws://localhost:8791";
+  const base =
+    runtimeQueryValue(transport === "sse" ? "demoHttpUrl" : "demoWsUrl") ??
+    (transport === "sse" ? "http://localhost:8791" : "ws://localhost:8791");
   const params = new URLSearchParams({ scenario });
   if (scenario === "fuzz") {
     params.set("mode", "mixed");
@@ -2530,6 +2581,46 @@ function demoStreamUrl(scenario: DemoScenario, transport: UpstreamTransport): st
     params.set("count", "24");
   }
   return `${base}/stream?${params.toString()}`;
+}
+
+function runtimeQueryValue(name: string): string | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  const value = new URLSearchParams(window.location.search).get(name)?.trim();
+  return value || undefined;
+}
+
+function readRecentTargets(): string[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(RECENT_TARGETS_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .filter((value): value is string => typeof value === "string")
+      .slice(0, MAX_RECENT_TARGETS);
+  } catch {
+    return [];
+  }
+}
+
+function rememberRecentTarget(target: string, setRecentTargets: (value: string[]) => void): void {
+  if (!target) {
+    return;
+  }
+
+  const next = [target, ...readRecentTargets().filter((value) => value !== target)].slice(
+    0,
+    MAX_RECENT_TARGETS,
+  );
+  setRecentTargets(next);
+  window.localStorage.setItem(RECENT_TARGETS_KEY, JSON.stringify(next));
 }
 
 function sessionReplayUrl(
@@ -2625,6 +2716,15 @@ function previewPayload(event: CaptureEvent): string {
     return JSON.stringify(event.envelope.payload);
   }
   return event.raw ?? event.rawBase64 ?? "";
+}
+
+function eventRowLabel(event: CaptureEvent): string {
+  const issueCount = event.issues?.length ?? 0;
+  const status =
+    issueCount > 0 ? `${formatCount(issueCount)} issue${issueCount === 1 ? "" : "s"}` : "OK";
+  const scope = eventScopeLabel(event);
+  const eventType = event.displayType ?? event.eventType ?? event.opcode;
+  return `Capture ${event.captureSeq}, ${scope}, ${eventType}, ${status}`;
 }
 
 function eventReplayTimeMs(event: CaptureEvent, index: number): number {
