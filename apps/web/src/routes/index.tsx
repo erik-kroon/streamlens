@@ -1,5 +1,12 @@
 import { createFileRoute } from "@tanstack/solid-router";
 import {
+  createSolidTable,
+  flexRender,
+  getCoreRowModel,
+  type ColumnDef,
+} from "@tanstack/solid-table";
+import { createVirtualizer } from "@tanstack/solid-virtual";
+import {
   Activity,
   AlertTriangle,
   Ban,
@@ -810,11 +817,7 @@ function App() {
                     separated
                   />
                   <FileImportButton separated onImport={importCapture} />
-                  <ToolbarIconButton
-                    icon={Eraser}
-                    label="Clear capture"
-                    onClick={clearCapture}
-                  />
+                  <ToolbarIconButton icon={Eraser} label="Clear capture" onClick={clearCapture} />
                 </div>
               </div>
               <Show when={replayTimeline().length > 0}>
@@ -1459,157 +1462,212 @@ function VirtualEventTable(props: {
   onSelect: (captureSeq: number) => void;
 }) {
   const rowHeight = 34;
+  const headerHeight = 34;
   const overscan = 8;
-  const [scrollTop, setScrollTop] = createSignal(0);
-  const [viewportHeight, setViewportHeight] = createSignal(0);
-  const [viewport, setViewport] = createSignal<HTMLDivElement>();
-  const tableLabels = [
-    "Seq",
-    "Stream / transport",
-    "Received",
-    "Topic",
-    "Status",
-    "Type",
-    "Payload preview",
+  let viewportElement!: HTMLDivElement;
+  const columns: ColumnDef<CaptureEvent>[] = [
+    {
+      id: "seq",
+      header: "Seq",
+      cell: ({ row }) => <span class="font-mono text-neutral-300">{row.original.captureSeq}</span>,
+    },
+    {
+      id: "stream",
+      header: "Stream / transport",
+      cell: ({ row }) => (
+        <span class="truncate font-mono text-neutral-500">
+          {row.original.streamId ?? "default"} / {formatTransport(row.original.transport)}
+        </span>
+      ),
+    },
+    {
+      id: "received",
+      header: "Received",
+      cell: ({ row }) => (
+        <span class="font-mono text-neutral-400">{formatEventTime(row.original.receivedAt)}</span>
+      ),
+    },
+    {
+      id: "topic",
+      header: "Topic",
+      cell: ({ row }) => (
+        <span class="truncate font-mono font-medium text-cyan-100">
+          {row.original.displayTopic ?? row.original.topic ?? "unknown"}
+        </span>
+      ),
+    },
+    {
+      id: "status",
+      header: "Status",
+      cell: ({ row }) => (
+        <span>
+          <EventStatusBadge
+            event={row.original}
+            replayState={eventReplayState(
+              row.original,
+              props.replayEnabled,
+              props.replayCursorSeq,
+              props.replayedThroughSeq,
+            )}
+          />
+        </span>
+      ),
+    },
+    {
+      id: "type",
+      header: "Type",
+      cell: ({ row }) => (
+        <span
+          class={
+            row.original.issues?.length
+              ? "truncate font-mono text-amber-200"
+              : "truncate font-mono text-neutral-300"
+          }
+        >
+          {row.original.displayType ?? row.original.eventType ?? row.original.opcode}
+        </span>
+      ),
+    },
+    {
+      id: "payload",
+      header: "Payload preview",
+      cell: ({ row }) => (
+        <span class="truncate text-left font-mono text-neutral-400">
+          {previewPayload(row.original)}
+        </span>
+      ),
+    },
   ];
 
-  onMount(() => {
-    const element = viewport();
-    if (!element) {
-      return;
-    }
-    setViewportHeight(element.clientHeight);
-    const observer = new ResizeObserver(([entry]) => {
-      setViewportHeight(entry.contentRect.height);
-    });
-    observer.observe(element);
-    onCleanup(() => observer.disconnect());
+  const table = createSolidTable({
+    get data() {
+      return props.events;
+    },
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+    getRowId: eventTableRowId,
   });
+  const tableRows = createMemo(() => table.getRowModel().rows);
+  const headerGroups = createMemo(() => table.getHeaderGroups());
 
-  const totalHeight = createMemo(() => props.events.length * rowHeight);
-  const scrollContentHeight = createMemo(() => rowHeight + totalHeight());
-  const rowScrollTop = createMemo(() => Math.max(0, scrollTop() - rowHeight));
-  const visibleRange = createMemo(() => {
-    const start = Math.max(0, Math.floor(rowScrollTop() / rowHeight) - overscan);
-    const visibleCount =
-      Math.ceil(Math.max(0, viewportHeight() - rowHeight) / rowHeight) + overscan * 2;
-    const end = Math.min(props.events.length, start + visibleCount);
-    return { start, end };
+  const rowVirtualizer = createVirtualizer<HTMLDivElement, HTMLButtonElement>({
+    get count() {
+      return tableRows().length;
+    },
+    getScrollElement: () => viewportElement || null,
+    estimateSize: () => rowHeight,
+    getItemKey: (index) => tableRows()[index]?.id ?? index,
+    overscan,
+    paddingStart: headerHeight,
   });
-  const visibleEvents = createMemo(() =>
-    props.events.slice(visibleRange().start, visibleRange().end),
-  );
 
   createEffect(() => {
     if (props.isLiveFollowPaused) {
       return;
     }
-    const eventCount = props.events.length;
+    const rowCount = tableRows().length;
+    const totalSize = rowVirtualizer.getTotalSize();
     const followVersion = props.followVersion;
-    const element = viewport();
-    if (!element) {
+    const element = viewportElement;
+    if (!element || rowCount === 0) {
       return;
     }
-    void eventCount;
     void followVersion;
     const frame = requestAnimationFrame(() => {
-      const nextScrollTop = Math.max(0, scrollContentHeight() - element.clientHeight);
-      element.scrollTop = nextScrollTop;
-      setScrollTop(nextScrollTop);
+      element.scrollTop = Math.max(0, totalSize - element.clientHeight);
     });
     onCleanup(() => cancelAnimationFrame(frame));
   });
 
   return (
     <div class="grid h-full min-h-0 min-w-0 overflow-hidden">
-      <Show
-        when={props.events.length > 0}
-        fallback={
-          <div class="grid min-h-0 min-w-0 grid-rows-[34px_minmax(0,1fr)] overflow-hidden">
-            <div class="min-w-0 overflow-hidden border-b border-neutral-800 bg-neutral-900/70">
-              <div class="event-grid text-xs font-medium uppercase text-neutral-500">
-                <For each={tableLabels}>{(label) => <span>{label}</span>}</For>
-              </div>
-            </div>
-            <EmptyState
-              connected={props.connected}
-              onConnect={props.onConnect}
-              onStartDemo={props.onStartDemo}
-            />
-          </div>
-        }
+      <div
+        ref={viewportElement}
+        class="event-table-scroll h-full min-h-0 min-w-0 overflow-auto"
+        role="region"
+        aria-label="Captured events"
       >
-        <div
-          ref={setViewport}
-          class="event-table-scroll min-h-0 min-w-0 overflow-auto"
-          role="region"
-          aria-label="Captured events"
-          onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-        >
-          <div class="relative min-w-[1080px]" style={{ height: `${scrollContentHeight()}px` }}>
-            <div class="event-grid sticky top-0 z-10 border-b border-neutral-800 bg-neutral-900/95 text-xs font-medium uppercase text-neutral-500 backdrop-blur">
-              <For each={tableLabels}>{(label) => <span>{label}</span>}</For>
-            </div>
-            <For each={visibleEvents()}>
-              {(event, index) => {
-                const eventIndex = () => visibleRange().start + index();
-                return (
-                  <button
-                    type="button"
-                    class={`event-grid row-button ${eventIndex() % 2 === 1 ? "odd-row" : ""} ${
-                      props.selectedSeq === event.captureSeq ? "selected" : ""
-                    } ${event.issues?.length ? "issue-row" : ""} ${
-                      props.replayEnabled &&
-                      props.replayedThroughSeq !== undefined &&
-                      event.captureSeq > props.replayedThroughSeq
-                        ? "future-row"
-                        : ""
-                    }`}
-                    aria-current={props.selectedSeq === event.captureSeq ? "true" : undefined}
-                    aria-label={eventRowLabel(event)}
-                    style={{ transform: `translateY(${rowHeight + eventIndex() * rowHeight}px)` }}
-                    onClick={() => props.onSelect(event.captureSeq)}
-                  >
-                    <span class="font-mono text-neutral-300">{event.captureSeq}</span>
-                    <span class="truncate font-mono text-neutral-500">
-                      {event.streamId ?? "default"} / {formatTransport(event.transport)}
-                    </span>
-                    <span class="font-mono text-neutral-400">
-                      {formatEventTime(event.receivedAt)}
-                    </span>
-                    <span class="truncate font-mono font-medium text-cyan-100">
-                      {event.displayTopic ?? event.topic ?? "unknown"}
-                    </span>
-                    <span>
-                      <EventStatusBadge
-                        event={event}
-                        replayState={eventReplayState(
-                          event,
-                          props.replayEnabled,
-                          props.replayCursorSeq,
-                          props.replayedThroughSeq,
+        <Show
+          when={props.events.length > 0}
+          fallback={
+            <div class="grid min-h-full min-w-[1080px] grid-rows-[34px_minmax(0,1fr)] overflow-hidden">
+              <div class="min-w-0 overflow-hidden border-b border-neutral-800 bg-neutral-900/70">
+                <div class="event-grid text-xs font-medium uppercase text-neutral-500">
+                  <For each={headerGroups()}>
+                    {(headerGroup) => (
+                      <For each={headerGroup.headers}>
+                        {(header) => (
+                          <span>
+                            {flexRender(header.column.columnDef.header, header.getContext())}
+                          </span>
                         )}
-                      />
-                    </span>
-                    <span
-                      class={
-                        event.issues?.length
-                          ? "truncate font-mono text-amber-200"
-                          : "truncate font-mono text-neutral-300"
-                      }
+                      </For>
+                    )}
+                  </For>
+                </div>
+              </div>
+              <EmptyState
+                connected={props.connected}
+                onConnect={props.onConnect}
+                onStartDemo={props.onStartDemo}
+              />
+            </div>
+          }
+        >
+          <div
+            class="relative min-w-[1080px]"
+            style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+          >
+            <div class="event-grid sticky top-0 z-10 border-b border-neutral-800 bg-neutral-900/95 text-xs font-medium uppercase text-neutral-500 backdrop-blur">
+              <For each={headerGroups()}>
+                {(headerGroup) => (
+                  <For each={headerGroup.headers}>
+                    {(header) => (
+                      <span>{flexRender(header.column.columnDef.header, header.getContext())}</span>
+                    )}
+                  </For>
+                )}
+              </For>
+            </div>
+            <For each={rowVirtualizer.getVirtualItems()}>
+              {(virtualRow) => {
+                const tableRow = () => tableRows()[virtualRow.index];
+                const event = () => tableRow()?.original;
+                return (
+                  <Show when={tableRow() && event()}>
+                    <button
+                      type="button"
+                      class={`event-grid row-button ${
+                        virtualRow.index % 2 === 1 ? "odd-row" : ""
+                      } ${props.selectedSeq === event()?.captureSeq ? "selected" : ""} ${
+                        event()?.issues?.length ? "issue-row" : ""
+                      } ${
+                        props.replayEnabled &&
+                        props.replayedThroughSeq !== undefined &&
+                        event() &&
+                        event()!.captureSeq > props.replayedThroughSeq
+                          ? "future-row"
+                          : ""
+                      }`}
+                      aria-current={props.selectedSeq === event()?.captureSeq ? "true" : undefined}
+                      aria-label={event() ? eventRowLabel(event()!) : undefined}
+                      style={{
+                        height: `${virtualRow.size}px`,
+                        transform: `translate3d(0, ${virtualRow.start}px, 0)`,
+                      }}
+                      onClick={() => event() && props.onSelect(event()!.captureSeq)}
                     >
-                      {event.displayType ?? event.eventType ?? event.opcode}
-                    </span>
-                    <span class="truncate text-left font-mono text-neutral-400">
-                      {previewPayload(event)}
-                    </span>
-                  </button>
+                      <For each={tableRow()!.getVisibleCells()}>
+                        {(cell) => flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </For>
+                    </button>
+                  </Show>
                 );
               }}
             </For>
           </div>
-        </div>
-      </Show>
+        </Show>
+      </div>
     </div>
   );
 }
@@ -1718,7 +1776,7 @@ function TopicPanel(props: {
   onFilterTopic: (value: string) => void;
 }) {
   return (
-    <div class="min-h-0 border-b border-neutral-800 lg:border-r lg:border-b-0">
+    <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] border-b border-neutral-800 lg:border-r lg:border-b-0">
       <PanelHeader icon={Activity} title="Topics" detail={`${props.topics.length} scopes`} />
       <Show
         when={props.topics.length > 0}
@@ -1730,7 +1788,7 @@ function TopicPanel(props: {
           />
         }
       >
-        <div class="grid max-h-full gap-2 overflow-auto p-3">
+        <div class="grid min-h-0 content-start gap-2 overflow-auto p-3">
           <For each={props.topics}>
             {(topic) => (
               <button
@@ -1872,7 +1930,7 @@ function LatencyPanel(props: {
   );
 
   return (
-    <div class="min-h-0 border-b border-neutral-800 lg:border-r lg:border-b-0">
+    <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] border-b border-neutral-800 lg:border-r lg:border-b-0">
       <PanelHeader icon={BarChart3} title="Latency" detail={sourceLagCoverage()} />
       <Show
         when={
@@ -1887,7 +1945,7 @@ function LatencyPanel(props: {
           />
         }
       >
-        <div class="grid max-h-full gap-3 overflow-auto p-3">
+        <div class="grid min-h-0 content-start gap-3 overflow-auto p-3">
           <LatencyMetricBlock
             title="Source Lag"
             summary={props.analytics.sourceLag}
@@ -2018,7 +2076,7 @@ function StreamDiffPanel(props: {
   );
 
   return (
-    <div class="min-h-0 border-b border-neutral-800 lg:border-r lg:border-b-0">
+    <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] border-b border-neutral-800 lg:border-r lg:border-b-0">
       <PanelHeader
         icon={GitCompare}
         title="Stream Diff"
@@ -2049,7 +2107,7 @@ function StreamDiffPanel(props: {
         }
       >
         {(summary) => (
-          <div class="grid max-h-full gap-3 overflow-auto p-3">
+          <div class="grid min-h-0 content-start gap-3 overflow-auto p-3">
             <div class="grid grid-cols-2 gap-2">
               <label class="grid min-w-0 gap-1">
                 <span class="truncate text-xs text-neutral-500">Base</span>
@@ -2184,7 +2242,7 @@ function TimelinePanel(props: {
   const recentMarkers = createMemo(() => props.summary.markers.slice(0, 6));
   const chartMarkers = createMemo(() => props.summary.markers.slice(0, 36));
   return (
-    <div class="grid min-h-0 grid-rows-[auto_1fr]">
+    <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]">
       <PanelHeader
         icon={Clock3}
         title="Timeline"
@@ -2518,9 +2576,7 @@ function ReplayControls(props: {
       <div class="flex items-center overflow-hidden rounded-md border border-[var(--ui-border)] bg-[var(--ui-bg)]">
         <ToolbarIconButton
           icon={props.enabled && props.playing ? Pause : Play}
-          label={
-            props.enabled ? (props.playing ? "Pause replay" : "Play replay") : "Start replay"
-          }
+          label={props.enabled ? (props.playing ? "Pause replay" : "Play replay") : "Start replay"}
           onClick={props.enabled ? props.onTogglePlaying : props.onStart}
           disabled={disabled()}
           active={props.enabled}
@@ -2554,9 +2610,7 @@ function ReplayControls(props: {
         class="field h-8 min-h-8 w-full py-1 text-xs"
         value={props.speed}
         disabled={!props.enabled}
-        onInput={(event) =>
-          props.onSpeedChange(Number(event.currentTarget.value) as ReplaySpeed)
-        }
+        onInput={(event) => props.onSpeedChange(Number(event.currentTarget.value) as ReplaySpeed)}
         aria-label="Replay speed"
       >
         <option value={0.25}>0.25x</option>
@@ -2849,6 +2903,10 @@ function eventRowLabel(event: CaptureEvent): string {
   const scope = eventScopeLabel(event);
   const eventType = event.displayType ?? event.eventType ?? event.opcode;
   return `Capture ${event.captureSeq}, ${scope}, ${eventType}, ${status}`;
+}
+
+function eventTableRowId(event: CaptureEvent): string {
+  return `${event.connectionId?.trim() || "missing-connection"}:${event.captureSeq}`;
 }
 
 function eventReplayTimeMs(event: CaptureEvent, index: number): number {

@@ -17,6 +17,7 @@ import {
 const DEFAULT_AGENT_HTTP_URL = "http://localhost:8790";
 const RECONNECT_DELAY_MS = 1_500;
 const MAX_UI_EVENTS = 10_000;
+const EVENT_FLUSH_INTERVAL_MS = 50;
 
 export type AgentClientPhase = "connecting" | "ready" | "disconnected" | "error";
 
@@ -66,6 +67,7 @@ export function createAgentClient(): AgentClientState {
 
   let socket: WebSocket | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let eventFlushTimer: ReturnType<typeof setTimeout> | undefined;
   let eventFlushFrame: number | undefined;
   let queuedEvents: CaptureEvent[] = [];
   let disposed = false;
@@ -83,6 +85,10 @@ export function createAgentClient(): AgentClientState {
   };
 
   const cancelEventFlush = () => {
+    if (eventFlushTimer !== undefined) {
+      clearTimeout(eventFlushTimer);
+      eventFlushTimer = undefined;
+    }
     if (eventFlushFrame !== undefined) {
       window.cancelAnimationFrame(eventFlushFrame);
       eventFlushFrame = undefined;
@@ -102,8 +108,11 @@ export function createAgentClient(): AgentClientState {
 
   const enqueueEvent = (event: CaptureEvent) => {
     queuedEvents.push(event);
-    if (eventFlushFrame === undefined) {
-      eventFlushFrame = window.requestAnimationFrame(flushQueuedEvents);
+    if (eventFlushTimer === undefined && eventFlushFrame === undefined) {
+      eventFlushTimer = setTimeout(() => {
+        eventFlushTimer = undefined;
+        eventFlushFrame = window.requestAnimationFrame(flushQueuedEvents);
+      }, EVENT_FLUSH_INTERVAL_MS);
     }
   };
 

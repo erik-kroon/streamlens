@@ -12,6 +12,8 @@
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/router-plugin": "^1.167.22",
     "@tanstack/solid-router": "^1.168.20",
+    "@tanstack/solid-table": "^8.21.3",
+    "@tanstack/solid-virtual": "^3.13.24",
     "@wiretap/env": "workspace:*",
     "dotenv": "catalog:",
     "lucide-solid": "^1.8.0",
