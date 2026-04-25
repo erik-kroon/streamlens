@@ -49,6 +49,8 @@ func (a *agent) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		a.handleOpenSession(w, sessionID)
 	case action == "export/jsonl" && r.Method == http.MethodGet:
 		a.handleExportSessionJSONL(w, sessionID)
+	case action == "export/tape" && r.Method == http.MethodGet:
+		a.handleExportSessionTape(w, sessionID)
 	case action == "" && r.Method == http.MethodDelete:
 		a.handleDeleteSession(w, sessionID)
 	default:

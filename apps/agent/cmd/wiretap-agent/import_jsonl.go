@@ -74,6 +74,10 @@ func importExportEvent(exported wiretapExportEvent) (captureEvent, error) {
 	if exported.Opcode != "" {
 		event.Opcode = exported.Opcode
 	}
+	event.StreamID = exported.StreamID
+	event.ConnectionID = exported.ConnectionID
+	event.Transport = exported.Transport
+	event.TransportMeta = exported.TransportMeta
 	if exported.ReceivedAt > 0 {
 		event.ReceivedAt = time.UnixMilli(exported.ReceivedAt).UTC().Format(time.RFC3339Nano)
 	}
@@ -138,7 +142,7 @@ func (a *agent) importJSONLEvents(events []captureEvent, targetURL string) (impo
 	a.mu.Unlock()
 
 	for _, event := range events {
-		a.recordEvent(event)
+		a.recordEventForStream(event.StreamID, event)
 	}
 
 	result := importJSONLResult{

@@ -6,6 +6,8 @@ export type AgentState =
   | "reconnecting"
   | "error";
 
+export type CaptureTransport = "websocket" | "sse" | string;
+
 export type AgentStatus = {
   agentId: string;
   version: string;
@@ -42,6 +44,7 @@ export type CaptureStats = {
 
 export type StreamStatus = {
   id: string;
+  transport?: CaptureTransport;
   url?: string;
   state: AgentState;
   lastError?: string;
@@ -82,10 +85,25 @@ export type WiretapEnvelope = {
   payload?: unknown;
 };
 
+export type OtelCorrelation = {
+  traceId?: string;
+  spanId?: string;
+  parentSpanId?: string;
+  traceState?: string;
+  logId?: string;
+  serviceName?: string;
+  source?: string;
+  traceQueryUrl?: string;
+  logQueryUrl?: string;
+  otlpEndpoint?: string;
+};
+
 export type CaptureEvent = {
   id?: string;
   streamId?: string;
   connectionId?: string;
+  transport?: CaptureTransport;
+  transportMeta?: Record<string, string>;
   captureSeq: number;
   receivedAt: string;
   direction: "inbound" | string;
@@ -105,6 +123,7 @@ export type CaptureEvent = {
   effectiveKey?: string;
   seq?: number;
   sourceTs?: unknown;
+  correlation?: OtelCorrelation;
   envelope?: WiretapEnvelope;
   parseError?: string;
   statuses?: string[];
@@ -140,6 +159,7 @@ export type TopicState = {
 
 export type ConnectRequest = {
   streamId?: string;
+  transport: "websocket" | "sse";
   url: string;
   headers: Record<string, string>;
   bearerToken: string;
@@ -167,8 +187,23 @@ export type ExtractionRules = {
   timestampPath: string;
   payloadPath: string;
   keyPaths: string[];
+  otel: OtelRules;
   schemaPlugins: SchemaPluginRule[];
   sandboxBoundary: string;
+};
+
+export type OtelRules = {
+  traceIdPaths: string[];
+  spanIdPaths: string[];
+  parentSpanIdPaths: string[];
+  traceparentPaths: string[];
+  traceStatePaths: string[];
+  logIdPaths: string[];
+  serviceNamePaths: string[];
+  otlpEndpoint?: string;
+  traceQueryUrl?: string;
+  logQueryUrl?: string;
+  headers?: Record<string, string>;
 };
 
 export type AgentToUiMessage =

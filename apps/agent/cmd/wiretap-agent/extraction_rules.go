@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -16,8 +18,23 @@ type extractionRules struct {
 	TimestampPath   string         `json:"timestampPath"`
 	PayloadPath     string         `json:"payloadPath"`
 	KeyPaths        []string       `json:"keyPaths"`
+	Otel            otelRules      `json:"otel"`
 	SchemaPlugins   []schemaPlugin `json:"schemaPlugins"`
 	SandboxBoundary string         `json:"sandboxBoundary"`
+}
+
+type otelRules struct {
+	TraceIDPaths      []string          `json:"traceIdPaths"`
+	SpanIDPaths       []string          `json:"spanIdPaths"`
+	ParentSpanIDPaths []string          `json:"parentSpanIdPaths"`
+	TraceparentPaths  []string          `json:"traceparentPaths"`
+	TraceStatePaths   []string          `json:"traceStatePaths"`
+	LogIDPaths        []string          `json:"logIdPaths"`
+	ServiceNamePaths  []string          `json:"serviceNamePaths"`
+	OTLPEndpoint      string            `json:"otlpEndpoint,omitempty"`
+	TraceQueryURL     string            `json:"traceQueryUrl,omitempty"`
+	LogQueryURL       string            `json:"logQueryUrl,omitempty"`
+	Headers           map[string]string `json:"headers,omitempty"`
 }
 
 type schemaPlugin struct {
@@ -39,8 +56,73 @@ func defaultExtractionRules() extractionRules {
 		TimestampPath:   "ts",
 		PayloadPath:     "payload",
 		KeyPaths:        []string{"key", "symbol"},
+		Otel:            defaultOtelRules(),
 		SchemaPlugins:   []schemaPlugin{},
 		SandboxBoundary: "declarative-json-rules-only",
+	}
+}
+
+func defaultOtelRules() otelRules {
+	return otelRules{
+		TraceIDPaths: []string{
+			"traceId",
+			"trace_id",
+			"trace.id",
+			"context.traceId",
+			"context.trace_id",
+			"payload.traceId",
+			"payload.trace_id",
+			"payload.trace.id",
+		},
+		SpanIDPaths: []string{
+			"spanId",
+			"span_id",
+			"span.id",
+			"context.spanId",
+			"context.span_id",
+			"payload.spanId",
+			"payload.span_id",
+			"payload.span.id",
+		},
+		ParentSpanIDPaths: []string{
+			"parentSpanId",
+			"parent_span_id",
+			"parent.spanId",
+			"parent.span_id",
+			"payload.parentSpanId",
+			"payload.parent_span_id",
+		},
+		TraceparentPaths: []string{
+			"traceparent",
+			"context.traceparent",
+			"payload.traceparent",
+		},
+		TraceStatePaths: []string{
+			"tracestate",
+			"traceState",
+			"context.tracestate",
+			"context.traceState",
+			"payload.tracestate",
+			"payload.traceState",
+		},
+		LogIDPaths: []string{
+			"logId",
+			"log_id",
+			"log.id",
+			"payload.logId",
+			"payload.log_id",
+			"payload.log.id",
+		},
+		ServiceNamePaths: []string{
+			"service.name",
+			"serviceName",
+			"service_name",
+			"resource.service.name",
+			"resource.attributes.service.name",
+			"payload.service.name",
+			"payload.serviceName",
+			"payload.service_name",
+		},
 	}
 }
 
@@ -64,7 +146,48 @@ func normalizeExtractionRules(rules extractionRules) extractionRules {
 	if len(rules.KeyPaths) == 0 {
 		rules.KeyPaths = defaults.KeyPaths
 	}
+	rules.Otel = normalizeOtelRules(rules.Otel)
 	rules.SandboxBoundary = defaults.SandboxBoundary
+	return rules
+}
+
+func normalizeOtelRules(rules otelRules) otelRules {
+	defaults := defaultOtelRules()
+	if len(rules.TraceIDPaths) == 0 {
+		rules.TraceIDPaths = defaults.TraceIDPaths
+	}
+	if len(rules.SpanIDPaths) == 0 {
+		rules.SpanIDPaths = defaults.SpanIDPaths
+	}
+	if len(rules.ParentSpanIDPaths) == 0 {
+		rules.ParentSpanIDPaths = defaults.ParentSpanIDPaths
+	}
+	if len(rules.TraceparentPaths) == 0 {
+		rules.TraceparentPaths = defaults.TraceparentPaths
+	}
+	if len(rules.TraceStatePaths) == 0 {
+		rules.TraceStatePaths = defaults.TraceStatePaths
+	}
+	if len(rules.LogIDPaths) == 0 {
+		rules.LogIDPaths = defaults.LogIDPaths
+	}
+	if len(rules.ServiceNamePaths) == 0 {
+		rules.ServiceNamePaths = defaults.ServiceNamePaths
+	}
+
+	rules.OTLPEndpoint = strings.TrimSpace(rules.OTLPEndpoint)
+	rules.TraceQueryURL = strings.TrimSpace(rules.TraceQueryURL)
+	rules.LogQueryURL = strings.TrimSpace(rules.LogQueryURL)
+	if len(rules.Headers) > 0 {
+		headers := make(map[string]string)
+		for key, value := range rules.Headers {
+			key = strings.TrimSpace(key)
+			if key != "" {
+				headers[key] = strings.TrimSpace(value)
+			}
+		}
+		rules.Headers = headers
+	}
 	return rules
 }
 
@@ -77,12 +200,47 @@ func (rules extractionRules) validate() error {
 			return err
 		}
 	}
+	if err := rules.Otel.validate(); err != nil {
+		return err
+	}
 	if len(rules.SchemaPlugins) > maxSchemaPlugins {
 		return fmt.Errorf("schemaPlugins is limited to %d plugins", maxSchemaPlugins)
 	}
 	for _, plugin := range rules.SchemaPlugins {
 		if err := plugin.validate(); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (rules otelRules) validate() error {
+	pathGroups := [][]string{
+		rules.TraceIDPaths,
+		rules.SpanIDPaths,
+		rules.ParentSpanIDPaths,
+		rules.TraceparentPaths,
+		rules.TraceStatePaths,
+		rules.LogIDPaths,
+		rules.ServiceNamePaths,
+	}
+	for _, group := range pathGroups {
+		for _, path := range group {
+			if err := validateRulePath(path); err != nil {
+				return fmt.Errorf("otel path: %w", err)
+			}
+		}
+	}
+	for _, rawURL := range []string{rules.OTLPEndpoint, rules.TraceQueryURL, rules.LogQueryURL} {
+		if strings.TrimSpace(rawURL) == "" {
+			continue
+		}
+		parsed, err := url.Parse(rawURL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return fmt.Errorf("otel URL %q must be an absolute URL", rawURL)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("otel URL %q must use http:// or https://", rawURL)
 		}
 	}
 	return nil
@@ -310,4 +468,109 @@ func stringInSlice(value string, values []string) bool {
 		}
 	}
 	return false
+}
+
+var (
+	traceIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
+	spanIDPattern  = regexp.MustCompile(`^[0-9a-fA-F]{16}$`)
+)
+
+func extractOtelCorrelation(values map[string]interface{}, rules otelRules) *otelCorrelation {
+	rules = normalizeOtelRules(rules)
+
+	traceID, traceSource := firstStringAtAnyPath(values, rules.TraceIDPaths)
+	spanID, spanSource := firstStringAtAnyPath(values, rules.SpanIDPaths)
+	parentSpanID, _ := firstStringAtAnyPath(values, rules.ParentSpanIDPaths)
+	traceState, _ := firstStringAtAnyPath(values, rules.TraceStatePaths)
+	logID, logSource := firstStringAtAnyPath(values, rules.LogIDPaths)
+	serviceName, _ := firstStringAtAnyPath(values, rules.ServiceNamePaths)
+
+	traceID = normalizeTraceID(traceID)
+	spanID = normalizeSpanID(spanID)
+	parentSpanID = normalizeSpanID(parentSpanID)
+	if traceparent, traceparentSource := firstStringAtAnyPath(values, rules.TraceparentPaths); traceparent != "" {
+		if parsedTraceID, parsedSpanID, ok := parseTraceparent(traceparent); ok {
+			if traceID == "" {
+				traceID = parsedTraceID
+				traceSource = traceparentSource
+			}
+			if spanID == "" {
+				spanID = parsedSpanID
+				spanSource = traceparentSource
+			}
+		}
+	}
+	if traceID == "" && spanID == "" && logID == "" {
+		return nil
+	}
+
+	source := traceSource
+	if source == "" {
+		source = spanSource
+	}
+	if source == "" {
+		source = logSource
+	}
+	return &otelCorrelation{
+		TraceID:       traceID,
+		SpanID:        spanID,
+		ParentSpanID:  parentSpanID,
+		TraceState:    traceState,
+		LogID:         logID,
+		ServiceName:   serviceName,
+		Source:        source,
+		TraceQueryURL: correlationQueryURL(rules.TraceQueryURL, traceID, spanID, logID),
+		LogQueryURL:   correlationQueryURL(rules.LogQueryURL, traceID, spanID, logID),
+		OTLPEndpoint:  rules.OTLPEndpoint,
+	}
+}
+
+func correlationQueryURL(template string, traceID string, spanID string, logID string) string {
+	template = strings.TrimSpace(template)
+	if template == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(
+		"{traceId}", url.QueryEscape(traceID),
+		"{spanId}", url.QueryEscape(spanID),
+		"{logId}", url.QueryEscape(logID),
+	)
+	return replacer.Replace(template)
+}
+
+func firstStringAtAnyPath(values map[string]interface{}, paths []string) (string, string) {
+	for _, path := range paths {
+		if text, ok := stringAtPath(values, path); ok {
+			return strings.TrimSpace(text), path
+		}
+	}
+	return "", ""
+}
+
+func parseTraceparent(value string) (string, string, bool) {
+	parts := strings.Split(strings.TrimSpace(value), "-")
+	if len(parts) < 4 {
+		return "", "", false
+	}
+	traceID := normalizeTraceID(parts[1])
+	spanID := normalizeSpanID(parts[2])
+	return traceID, spanID, traceID != "" && spanID != ""
+}
+
+func normalizeTraceID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.TrimPrefix(value, "0x")
+	if !traceIDPattern.MatchString(value) || value == strings.Repeat("0", 32) {
+		return ""
+	}
+	return value
+}
+
+func normalizeSpanID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.TrimPrefix(value, "0x")
+	if !spanIDPattern.MatchString(value) || value == strings.Repeat("0", 16) {
+		return ""
+	}
+	return value
 }

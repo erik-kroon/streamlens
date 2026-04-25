@@ -40,6 +40,8 @@ const (
 	writeDeadlineTimeout = 5 * time.Second
 	statsBroadcastEvery  = 250 * time.Millisecond
 	defaultStreamID      = "default"
+	transportWebSocket   = "websocket"
+	transportSSE         = "sse"
 )
 
 type agent struct {
@@ -82,6 +84,7 @@ const (
 
 type connectRequest struct {
 	StreamID      string            `json:"streamId,omitempty"`
+	Transport     string            `json:"transport,omitempty"`
 	URL           string            `json:"url"`
 	Headers       map[string]string `json:"headers"`
 	BearerToken   string            `json:"bearerToken"`
@@ -101,6 +104,7 @@ type upstreamSession struct {
 
 type streamRuntime struct {
 	ID              string           `json:"id"`
+	Transport       string           `json:"transport,omitempty"`
 	URL             string           `json:"url,omitempty"`
 	State           agentState       `json:"state"`
 	LastError       string           `json:"lastError,omitempty"`
@@ -145,6 +149,7 @@ type captureStats struct {
 
 type streamStatus struct {
 	ID           string     `json:"id"`
+	Transport    string     `json:"transport,omitempty"`
 	URL          string     `json:"url,omitempty"`
 	State        agentState `json:"state"`
 	LastError    string     `json:"lastError,omitempty"`
@@ -165,50 +170,56 @@ type liveClient struct {
 }
 
 type captureEvent struct {
-	ID                string           `json:"id,omitempty"`
-	StreamID          string           `json:"streamId,omitempty"`
-	ConnectionID      string           `json:"connectionId,omitempty"`
-	CaptureSeq        int64            `json:"captureSeq"`
-	ReceivedAt        string           `json:"receivedAt"`
-	Direction         string           `json:"direction"`
-	Opcode            string           `json:"opcode"`
-	OriginalSizeBytes int64            `json:"originalSizeBytes"`
-	SizeBytes         int64            `json:"sizeBytes"`
-	Raw               string           `json:"raw,omitempty"`
-	RawBase64         string           `json:"rawBase64,omitempty"`
-	RawTruncated      bool             `json:"rawTruncated"`
-	Truncated         bool             `json:"truncated"`
-	Oversized         bool             `json:"oversized"`
-	Topic             string           `json:"topic,omitempty"`
-	DisplayTopic      string           `json:"displayTopic"`
-	Type              string           `json:"eventType,omitempty"`
-	DisplayType       string           `json:"displayType"`
-	Key               string           `json:"key,omitempty"`
-	EffectiveKey      string           `json:"effectiveKey,omitempty"`
-	Seq               *int64           `json:"seq,omitempty"`
-	SourceTS          interface{}      `json:"sourceTs,omitempty"`
-	Envelope          *wiretapEnvelope `json:"envelope,omitempty"`
-	ParseError        string           `json:"parseError,omitempty"`
-	Statuses          []string         `json:"statuses"`
-	Issues            []captureIssue   `json:"issues,omitempty"`
+	ID                string            `json:"id,omitempty"`
+	StreamID          string            `json:"streamId,omitempty"`
+	ConnectionID      string            `json:"connectionId,omitempty"`
+	Transport         string            `json:"transport,omitempty"`
+	TransportMeta     map[string]string `json:"transportMeta,omitempty"`
+	CaptureSeq        int64             `json:"captureSeq"`
+	ReceivedAt        string            `json:"receivedAt"`
+	Direction         string            `json:"direction"`
+	Opcode            string            `json:"opcode"`
+	OriginalSizeBytes int64             `json:"originalSizeBytes"`
+	SizeBytes         int64             `json:"sizeBytes"`
+	Raw               string            `json:"raw,omitempty"`
+	RawBase64         string            `json:"rawBase64,omitempty"`
+	RawTruncated      bool              `json:"rawTruncated"`
+	Truncated         bool              `json:"truncated"`
+	Oversized         bool              `json:"oversized"`
+	Topic             string            `json:"topic,omitempty"`
+	DisplayTopic      string            `json:"displayTopic"`
+	Type              string            `json:"eventType,omitempty"`
+	DisplayType       string            `json:"displayType"`
+	Key               string            `json:"key,omitempty"`
+	EffectiveKey      string            `json:"effectiveKey,omitempty"`
+	Seq               *int64            `json:"seq,omitempty"`
+	SourceTS          interface{}       `json:"sourceTs,omitempty"`
+	Correlation       *otelCorrelation  `json:"correlation,omitempty"`
+	Envelope          *wiretapEnvelope  `json:"envelope,omitempty"`
+	ParseError        string            `json:"parseError,omitempty"`
+	Statuses          []string          `json:"statuses"`
+	Issues            []captureIssue    `json:"issues,omitempty"`
 }
 
 type wiretapExportEvent struct {
-	CaptureSeq        int64            `json:"captureSeq"`
-	StreamID          string           `json:"streamId,omitempty"`
-	ConnectionID      string           `json:"connectionId"`
-	ReceivedAt        int64            `json:"receivedAt"`
-	Direction         string           `json:"direction"`
-	Opcode            string           `json:"opcode"`
-	Raw               string           `json:"raw"`
-	RawBase64         string           `json:"rawBase64,omitempty"`
-	RawTruncated      bool             `json:"rawTruncated"`
-	Truncated         bool             `json:"truncated"`
-	Oversized         bool             `json:"oversized"`
-	OriginalSizeBytes int64            `json:"originalSizeBytes"`
-	SizeBytes         int64            `json:"sizeBytes"`
-	Parsed            *wiretapEnvelope `json:"parsed"`
-	ParseError        string           `json:"parseError,omitempty"`
+	CaptureSeq        int64             `json:"captureSeq"`
+	StreamID          string            `json:"streamId,omitempty"`
+	ConnectionID      string            `json:"connectionId"`
+	Transport         string            `json:"transport,omitempty"`
+	TransportMeta     map[string]string `json:"transportMeta,omitempty"`
+	ReceivedAt        int64             `json:"receivedAt"`
+	Direction         string            `json:"direction"`
+	Opcode            string            `json:"opcode"`
+	Raw               string            `json:"raw"`
+	RawBase64         string            `json:"rawBase64,omitempty"`
+	RawTruncated      bool              `json:"rawTruncated"`
+	Truncated         bool              `json:"truncated"`
+	Oversized         bool              `json:"oversized"`
+	OriginalSizeBytes int64             `json:"originalSizeBytes"`
+	SizeBytes         int64             `json:"sizeBytes"`
+	Correlation       *otelCorrelation  `json:"correlation,omitempty"`
+	Parsed            *wiretapEnvelope  `json:"parsed"`
+	ParseError        string            `json:"parseError,omitempty"`
 }
 
 type wiretapEnvelope struct {
@@ -219,6 +230,19 @@ type wiretapEnvelope struct {
 	Key     string      `json:"key,omitempty"`
 	Symbol  string      `json:"symbol,omitempty"`
 	Payload interface{} `json:"payload,omitempty"`
+}
+
+type otelCorrelation struct {
+	TraceID       string `json:"traceId,omitempty"`
+	SpanID        string `json:"spanId,omitempty"`
+	ParentSpanID  string `json:"parentSpanId,omitempty"`
+	TraceState    string `json:"traceState,omitempty"`
+	LogID         string `json:"logId,omitempty"`
+	ServiceName   string `json:"serviceName,omitempty"`
+	Source        string `json:"source,omitempty"`
+	TraceQueryURL string `json:"traceQueryUrl,omitempty"`
+	LogQueryURL   string `json:"logQueryUrl,omitempty"`
+	OTLPEndpoint  string `json:"otlpEndpoint,omitempty"`
 }
 
 type captureIssue struct {
@@ -236,10 +260,12 @@ type upstreamConn struct {
 }
 
 type upstreamFrame struct {
-	opcode    byte
-	payload   []byte
-	sizeBytes int64
-	oversized bool
+	opcode        byte
+	payload       []byte
+	sizeBytes     int64
+	oversized     bool
+	transport     string
+	transportMeta map[string]string
 }
 
 func main() {
@@ -289,6 +315,7 @@ func main() {
 	mux.HandleFunc("/topics", agent.withCORS(agent.handleTopics))
 	mux.HandleFunc("/extraction-rules", agent.withCORS(agent.handleExtractionRules))
 	mux.HandleFunc("/export/jsonl", agent.withCORS(agent.handleExportJSONL))
+	mux.HandleFunc("/export/tape", agent.withCORS(agent.handleExportTape))
 	mux.HandleFunc("/import/jsonl", agent.withCORS(agent.handleImportJSONL))
 	mux.HandleFunc("/sessions", agent.withCORS(agent.handleSessions))
 	mux.HandleFunc("/sessions/", agent.withCORS(agent.handleSessionByID))
@@ -547,7 +574,7 @@ func (a *agent) handleLive(w http.ResponseWriter, r *http.Request) {
 func (a *agent) withCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition")
 		if r.Method == http.MethodOptions {
@@ -594,6 +621,7 @@ func (a *agent) replaceSession(config connectRequest) *upstreamSession {
 	stream.Session = session
 	stream.Config = &session.config
 	stream.URL = config.URL
+	stream.Transport = config.Transport
 	stream.State = stateConnecting
 	stream.LastError = ""
 	stream.ConnectedAt = nil
@@ -644,7 +672,10 @@ func (a *agent) runUpstream(config connectRequest) {
 		firstAttempt = false
 
 		a.setConnectionState(streamID, stateConnecting, "")
-		conn, err := dialUpstream(ctx, config)
+		err := a.connectAndCapture(ctx, streamID, config)
+		if err == nil {
+			err = errors.New("upstream capture ended")
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				a.setConnectionState(streamID, stateDisconnected, "")
@@ -657,40 +688,55 @@ func (a *agent) runUpstream(config connectRequest) {
 			continue
 		}
 
-		connectedAt := time.Now().UTC()
-		a.mu.Lock()
-		a.connectionCount++
-		connectionID := fmt.Sprintf("%s-conn-%d", streamID, a.connectionCount)
-		a.connectionID = connectionID
-		a.connectedAt = &connectedAt
-		a.state = stateConnected
-		a.lastError = ""
-		if stream := a.streams[streamID]; stream != nil {
-			stream.Connections++
-			stream.ConnectionID = connectionID
-			stream.ConnectedAt = &connectedAt
-			stream.ConnectedAtText = connectedAt.Format(time.RFC3339Nano)
-			stream.State = stateConnected
-			stream.LastError = ""
-		}
-		a.mu.Unlock()
-		a.broadcast(agentMessage{Type: "agent.ready", Payload: a.status()})
-		a.broadcast(agentMessage{Type: "capture.stats", Payload: a.stats()})
-
-		err = a.captureFrames(ctx, streamID, conn)
-		_ = conn.Close()
-		if ctx.Err() != nil {
-			a.setConnectionState(streamID, stateDisconnected, "")
-			return
-		}
-		a.setConnectionState(streamID, stateError, err.Error())
-		if !config.AutoReconnect {
-			return
-		}
 	}
 }
 
-func (a *agent) captureFrames(ctx context.Context, streamID string, conn *upstreamConn) error {
+func (a *agent) connectAndCapture(ctx context.Context, streamID string, config connectRequest) error {
+	switch config.Transport {
+	case transportSSE:
+		body, err := dialSSE(ctx, config)
+		if err != nil {
+			return err
+		}
+		a.markStreamConnected(streamID)
+		err = a.captureSSE(ctx, streamID, body)
+		_ = body.Close()
+		return err
+	default:
+		conn, err := dialWebSocket(ctx, config)
+		if err != nil {
+			return err
+		}
+		a.markStreamConnected(streamID)
+		err = a.captureWebSocketFrames(ctx, streamID, conn)
+		_ = conn.Close()
+		return err
+	}
+}
+
+func (a *agent) markStreamConnected(streamID string) {
+	connectedAt := time.Now().UTC()
+	a.mu.Lock()
+	a.connectionCount++
+	connectionID := fmt.Sprintf("%s-conn-%d", streamID, a.connectionCount)
+	a.connectionID = connectionID
+	a.connectedAt = &connectedAt
+	a.state = stateConnected
+	a.lastError = ""
+	if stream := a.streams[streamID]; stream != nil {
+		stream.Connections++
+		stream.ConnectionID = connectionID
+		stream.ConnectedAt = &connectedAt
+		stream.ConnectedAtText = connectedAt.Format(time.RFC3339Nano)
+		stream.State = stateConnected
+		stream.LastError = ""
+	}
+	a.mu.Unlock()
+	a.broadcast(agentMessage{Type: "agent.ready", Payload: a.status()})
+	a.broadcast(agentMessage{Type: "capture.stats", Payload: a.stats()})
+}
+
+func (a *agent) captureWebSocketFrames(ctx context.Context, streamID string, conn *upstreamConn) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -705,6 +751,7 @@ func (a *agent) captureFrames(ctx context.Context, streamID string, conn *upstre
 
 		switch frame.opcode {
 		case 0x1, 0x2:
+			frame.transport = transportWebSocket
 			event := normalizeCaptureWithRules(frame, a.currentExtractionRules())
 			a.recordEventForStream(streamID, event)
 		case 0x8:
@@ -714,6 +761,44 @@ func (a *agent) captureFrames(ctx context.Context, streamID string, conn *upstre
 				return err
 			}
 		}
+	}
+}
+
+func (a *agent) captureSSE(ctx context.Context, streamID string, reader io.Reader) error {
+	scanner := newSSEScanner(reader)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		event, err := scanner.next()
+		if err != nil {
+			return err
+		}
+		if len(event.data) == 0 {
+			continue
+		}
+
+		frame := upstreamFrame{
+			opcode:    0x1,
+			payload:   event.data,
+			sizeBytes: event.sizeBytes,
+			oversized: event.oversized,
+			transport: transportSSE,
+		}
+		if event.eventType != "" || event.id != "" {
+			frame.transportMeta = map[string]string{}
+			if event.eventType != "" {
+				frame.transportMeta["event"] = event.eventType
+			}
+			if event.id != "" {
+				frame.transportMeta["id"] = event.id
+			}
+		}
+		capture := normalizeCaptureWithRules(frame, a.currentExtractionRules())
+		a.recordEventForStream(streamID, capture)
 	}
 }
 
@@ -743,6 +828,9 @@ func (a *agent) recordEventForStream(streamID string, event captureEvent) {
 	a.nextCaptureSeq++
 	event.CaptureSeq = a.nextCaptureSeq
 	event.StreamID = streamID
+	if event.Transport == "" {
+		event.Transport = stream.Transport
+	}
 	event.ConnectionID = stream.ConnectionID
 	if event.ConnectionID == "" {
 		event.ConnectionID = streamID + "-conn-0"
@@ -908,6 +996,7 @@ func (a *agent) status() agentStatus {
 			"topics":        "http://localhost:8790/topics",
 			"extraction":    "http://localhost:8790/extraction-rules",
 			"exportJsonl":   "http://localhost:8790/export/jsonl",
+			"exportTape":    "http://localhost:8790/export/tape",
 			"importJsonl":   "http://localhost:8790/import/jsonl",
 			"session":       "http://localhost:8790/sessions/current",
 			"sessionEvents": "http://localhost:8790/sessions/current/events",
@@ -1002,6 +1091,8 @@ func exportEvent(event captureEvent) wiretapExportEvent {
 		CaptureSeq:        event.CaptureSeq,
 		StreamID:          event.StreamID,
 		ConnectionID:      event.ConnectionID,
+		Transport:         event.Transport,
+		TransportMeta:     event.TransportMeta,
 		ReceivedAt:        receivedAtMillis(event.ReceivedAt),
 		Direction:         event.Direction,
 		Opcode:            event.Opcode,
@@ -1012,6 +1103,7 @@ func exportEvent(event captureEvent) wiretapExportEvent {
 		Oversized:         event.Oversized,
 		OriginalSizeBytes: event.OriginalSizeBytes,
 		SizeBytes:         event.SizeBytes,
+		Correlation:       event.Correlation,
 		Parsed:            event.Envelope,
 		ParseError:        event.ParseError,
 	}
@@ -1123,14 +1215,24 @@ func (request *connectRequest) validate() error {
 
 	parsed, err := url.Parse(request.URL)
 	if err != nil {
-		return fmt.Errorf("invalid websocket url: %w", err)
+		return fmt.Errorf("invalid upstream url: %w", err)
 	}
 
-	if parsed.Scheme != "ws" && parsed.Scheme != "wss" {
-		return errors.New("url must use ws:// or wss://")
-	}
 	if parsed.Host == "" {
 		return errors.New("url must include a host")
+	}
+	request.Transport = normalizeTransport(request.Transport, parsed.Scheme)
+	switch request.Transport {
+	case transportWebSocket:
+		if parsed.Scheme != "ws" && parsed.Scheme != "wss" {
+			return errors.New("websocket transport requires ws:// or wss://")
+		}
+	case transportSSE:
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return errors.New("sse transport requires http:// or https://")
+		}
+	default:
+		return errors.New("transport must be websocket or sse")
 	}
 
 	request.APIKeyHeader = strings.TrimSpace(request.APIKeyHeader)
@@ -1155,7 +1257,28 @@ func (request *connectRequest) validate() error {
 	return nil
 }
 
-func dialUpstream(ctx context.Context, config connectRequest) (*upstreamConn, error) {
+func normalizeTransport(value string, scheme string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "", "auto":
+		switch scheme {
+		case "http", "https":
+			return transportSSE
+		case "ws", "wss":
+			return transportWebSocket
+		default:
+			return value
+		}
+	case "ws", "websocket":
+		return transportWebSocket
+	case "sse", "eventsource", "event-stream":
+		return transportSSE
+	default:
+		return value
+	}
+}
+
+func dialWebSocket(ctx context.Context, config connectRequest) (*upstreamConn, error) {
 	parsed, err := url.Parse(config.URL)
 	if err != nil {
 		return nil, err
@@ -1245,6 +1368,39 @@ func dialUpstream(ctx context.Context, config connectRequest) (*upstreamConn, er
 	return &upstreamConn{Conn: conn, reader: reader}, nil
 }
 
+func dialSSE(ctx context.Context, config connectRequest) (io.ReadCloser, error) {
+	parsed, err := url.Parse(config.URL)
+	if err != nil {
+		return nil, err
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "text/event-stream")
+	request.Header.Set("Cache-Control", "no-cache")
+	for name, value := range config.Headers {
+		request.Header.Set(name, value)
+	}
+	if strings.TrimSpace(config.BearerToken) != "" {
+		request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(config.BearerToken))
+	}
+	if config.APIKeyHeader != "" && strings.TrimSpace(config.APIKey) != "" {
+		request.Header.Set(config.APIKeyHeader, strings.TrimSpace(config.APIKey))
+	}
+
+	response, err := (&http.Client{}).Do(request)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		_ = response.Body.Close()
+		return nil, fmt.Errorf("sse request returned %s", response.Status)
+	}
+	return response.Body, nil
+}
+
 func addressWithDefaultPort(parsed *url.URL, fallbackPort string) string {
 	if parsed.Port() != "" {
 		return parsed.Host
@@ -1318,6 +1474,103 @@ func readServerFrame(conn *upstreamConn) (upstreamFrame, error) {
 	return upstreamFrame{opcode: opcode, payload: payload, sizeBytes: length, oversized: oversized}, nil
 }
 
+type sseScanner struct {
+	reader *bufio.Reader
+}
+
+type sseMessage struct {
+	data      []byte
+	eventType string
+	id        string
+	sizeBytes int64
+	oversized bool
+}
+
+func newSSEScanner(reader io.Reader) *sseScanner {
+	return &sseScanner{reader: bufio.NewReader(reader)}
+}
+
+func (scanner *sseScanner) next() (sseMessage, error) {
+	var message sseMessage
+	var dataLines int
+
+	for {
+		line, err := scanner.reader.ReadString('\n')
+		if err != nil && !(errors.Is(err, io.EOF) && line != "") {
+			if errors.Is(err, io.EOF) && len(message.data) > 0 {
+				return message, nil
+			}
+			return sseMessage{}, err
+		}
+
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			if len(message.data) > 0 || message.eventType != "" || message.id != "" {
+				return message, nil
+			}
+			if errors.Is(err, io.EOF) {
+				return sseMessage{}, err
+			}
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			if errors.Is(err, io.EOF) {
+				return sseMessage{}, err
+			}
+			continue
+		}
+
+		field, value := splitSSEField(line)
+		switch field {
+		case "event":
+			message.eventType = value
+		case "id":
+			message.id = value
+		case "data":
+			if dataLines > 0 {
+				message.sizeBytes++
+				appendSSEData(&message, []byte("\n"))
+			}
+			message.sizeBytes += int64(len(value))
+			appendSSEData(&message, []byte(value))
+			dataLines++
+		}
+
+		if errors.Is(err, io.EOF) {
+			if len(message.data) > 0 {
+				return message, nil
+			}
+			return sseMessage{}, err
+		}
+	}
+}
+
+func splitSSEField(line string) (string, string) {
+	index := strings.IndexByte(line, ':')
+	if index == -1 {
+		return line, ""
+	}
+	value := line[index+1:]
+	if strings.HasPrefix(value, " ") {
+		value = value[1:]
+	}
+	return line[:index], value
+}
+
+func appendSSEData(message *sseMessage, chunk []byte) {
+	if message.sizeBytes > maxRawMessageBytes {
+		message.oversized = true
+	}
+	if len(message.data) >= rawPreviewBytes {
+		return
+	}
+	remaining := rawPreviewBytes - len(message.data)
+	if len(chunk) > remaining {
+		chunk = chunk[:remaining]
+	}
+	message.data = append(message.data, chunk...)
+}
+
 func normalizeCapture(frame upstreamFrame) captureEvent {
 	return normalizeCaptureWithRules(frame, defaultExtractionRules())
 }
@@ -1327,6 +1580,8 @@ func normalizeCaptureWithRules(frame upstreamFrame, rules extractionRules) captu
 	event := captureEvent{
 		ReceivedAt:        time.Now().UTC().Format(time.RFC3339Nano),
 		Direction:         "inbound",
+		Transport:         frame.transport,
+		TransportMeta:     copyStringMap(frame.transportMeta),
 		Opcode:            opcodeLabel(frame.opcode),
 		OriginalSizeBytes: frame.sizeBytes,
 		SizeBytes:         int64(len(frame.payload)),
@@ -1416,6 +1671,7 @@ func normalizeCaptureWithRules(frame upstreamFrame, rules extractionRules) captu
 	}
 
 	event.Envelope = &envelope
+	event.Correlation = extractOtelCorrelation(parsed, rules.Otel)
 	applySchemaPlugins(parsed, rules.SchemaPlugins, &event)
 
 	if hasIssueCode(event.Issues, "schema_error") {
@@ -1426,6 +1682,17 @@ func normalizeCaptureWithRules(frame upstreamFrame, rules extractionRules) captu
 	}
 	finalizeStatuses(&event)
 	return event
+}
+
+func copyStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	copied := make(map[string]string, len(values))
+	for key, value := range values {
+		copied[key] = value
+	}
+	return copied
 }
 
 func decodeEnvelopeObject(payload []byte) (map[string]interface{}, error) {
